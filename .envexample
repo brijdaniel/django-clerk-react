@@ -1,0 +1,6 @@
+# this env is for the docker-compose file during dev
+POSTGRES_DB=app
+POSTGRES_USER=app
+POSTGRES_PASSWORD=app
+POSTGRES_HOST=db
+POSTGRES_PORT=5432

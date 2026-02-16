@@ -1,0 +1,10 @@
+Django
+djangorestframework
+django-cors-headers
+drf-spectacular
+pylint-django
+python-dotenv
+sentry-sdk[django]
+psycopg2
+PyJWT[crypto]
+svix
