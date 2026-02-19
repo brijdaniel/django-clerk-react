@@ -11,7 +11,7 @@ class OrganisationSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['clerk_id', 'email', 'first_name', 'last_name']
+        fields = ['clerk_id', 'username']
 
 
 class MeSerializer(serializers.Serializer):

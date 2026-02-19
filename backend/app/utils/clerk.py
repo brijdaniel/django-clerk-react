@@ -1,6 +1,7 @@
 from ..models import *
 
 
+# Webhooks
 def _handle_user_created(data):
     email = ''
     email_addresses = data.get('email_addresses', [])
@@ -34,6 +35,7 @@ def _handle_organisation_created(data):
         defaults={
             'name': data.get('name', ''),
             'slug': data.get('slug', ''),
+            'is_active': True
         },
     )
 
@@ -43,7 +45,17 @@ def _handle_organisation_updated(data):
 
 
 def _handle_organisation_deleted(data):
-    Organisation.objects.filter(clerk_org_id=data['id']).delete()
+    Organisation.objects.filter(clerk_org_id=data['id']).update(is_active=False)
+    
+    memberships = OrganisationMembership.objects.filter(organisation__clerk_org_id=data['id'], is_active=True)
+    memberships.update(is_active=False)
+    
+    user_ids = list(memberships.values_list('user_id', flat=True))
+    User.objects.filter(
+        id__in=user_ids,
+    ).exclude(
+        memberships__is_active=True,
+    ).update(is_active=False)
 
 
 def _handle_membership_created(data):
@@ -54,7 +66,7 @@ def _handle_membership_created(data):
         OrganisationMembership.objects.update_or_create(
             user=user,
             organisation=org,
-            defaults={'role': data.get('role', 'member')},
+            defaults={'role': data.get('role', 'member'), 'is_active': True},
         )
 
 
@@ -70,7 +82,7 @@ def _handle_membership_deleted(data):
         OrganisationMembership.objects.filter(
             user__clerk_id=user_id,
             organisation__clerk_org_id=org_id,
-        ).delete()
+        ).update(is_active=False)
 
 
 # Clerk API event type strings must use US spelling (Clerk's API convention)

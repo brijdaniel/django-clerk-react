@@ -3,9 +3,15 @@ from django.db import models
 
 
 class User(AbstractUser):
+    """AbstractUser inherits some fields that are not required when using Clerk.
+    
+    However using AbstractUser is simple and allows for django admin panel, etc
+    """
     clerk_id = models.CharField(max_length=255, unique=True, db_index=True)
     username = models.CharField(max_length=150, blank=True, null=True)
-
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
     USERNAME_FIELD = 'clerk_id'
     REQUIRED_FIELDS = []
 
@@ -22,6 +28,7 @@ class Organisation(models.Model):
     slug = models.SlugField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'organisations'
@@ -36,6 +43,7 @@ class OrganisationMembership(models.Model):
     role = models.CharField(max_length=50, default='member')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'organisation_memberships'
