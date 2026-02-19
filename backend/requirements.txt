@@ -8,3 +8,5 @@ sentry-sdk[django]
 psycopg2
 PyJWT[crypto]
 svix
+requests
+clerk-backend-api
