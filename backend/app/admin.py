@@ -79,6 +79,6 @@ class ConfigAdmin(admin.ModelAdmin):
 
 @admin.register(CreditTransaction)
 class CreditTransactionAdmin(admin.ModelAdmin):
-    list_display = ('organisation', 'transaction_type', 'amount', 'balance_after', 'description', 'format', 'created_at')
+    list_display = ('organisation', 'transaction_type', 'amount', 'unit_rate', 'balance_after', 'description', 'format', 'created_at')
     list_filter = ('transaction_type', 'format', 'organisation')
     search_fields = ('description', 'organisation__name')

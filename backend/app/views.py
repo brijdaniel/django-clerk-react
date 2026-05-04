@@ -1090,7 +1090,7 @@ class BillingViewSet(TenantScopedMixin, viewsets.GenericViewSet):
             .distinct()
         )
         monthly_usage_by_format = {
-            fmt: {'spend': str(get_monthly_usage(org, fmt)), 'rate': str(get_rate(fmt))}
+            fmt: {'spend': str(get_monthly_usage(org, fmt)), 'rate': str(get_rate(fmt, org))}
             for fmt in known_formats
         }
 

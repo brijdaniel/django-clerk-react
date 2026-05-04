@@ -64,8 +64,17 @@ def get_balance(org) -> Decimal:
     return org.__class__.objects.values_list('credit_balance', flat=True).get(pk=org.pk)
 
 
-def get_rate(format: str) -> Decimal:
-    """Return the per-unit billing rate for a message format (from settings)."""
+def get_rate(format: str, org=None) -> Decimal:
+    """Return the per-unit billing rate for a message format.
+
+    Checks for a per-org override in Config (e.g. name='sms_rate') first,
+    then falls back to the global setting (e.g. SMS_RATE).
+    """
+    if org is not None:
+        config = Config.objects.filter(organisation=org, name=f'{format}_rate').first()
+        if config is not None:
+            return Decimal(config.value)
+
     attr = f'{format.upper()}_RATE'
     rate = getattr(settings, attr, None)
     if rate is None:
@@ -128,7 +137,7 @@ def check_can_send(org, units: int, format: str) -> tuple:
     """
     Unified pre-send gate for any message format. Returns (allowed: bool, error: str | None).
 
-    cost = units * get_rate(format)
+    cost = units * get_rate(format, org)
 
     Checks (in order):
     0. Past-due billing — blocks all sends when subscription payment is overdue
@@ -141,7 +150,7 @@ def check_can_send(org, units: int, format: str) -> tuple:
     if org.billing_mode == org.BILLING_PAST_DUE:
         return False, 'Subscription payment is past due. Please update your billing details.'
 
-    cost = Decimal(units) * get_rate(format)
+    cost = Decimal(units) * get_rate(format, org)
     info = get_monthly_limit_info(org)
 
     if info['limit'] is not None and info['remaining'] < cost:
@@ -159,14 +168,15 @@ def check_can_send(org, units: int, format: str) -> tuple:
 
 def record_usage(org, units: int, format: str, description: str, user=None, schedule=None) -> None:
     """
-    Record a successful send. Cost = units * get_rate(format).
+    Record a successful send. Cost = units * get_rate(format, org).
 
     trial mode:      SELECT FOR UPDATE → deduct credit_balance → INSERT type=deduct
     subscribed mode: INSERT type=usage, balance unchanged (tracked for Clerk Billing reporting)
 
     user: the User who initiated the send (request.user); None for system/webhook actions.
     """
-    cost = Decimal(units) * get_rate(format)
+    rate = get_rate(format, org)
+    cost = Decimal(units) * rate
 
     if org.billing_mode == org.BILLING_TRIAL:
         with db_transaction.atomic():
@@ -184,6 +194,7 @@ def record_usage(org, units: int, format: str, description: str, user=None, sche
                 format=format,
                 schedule=schedule,
                 created_by=user,
+                unit_rate=rate,
             )
     else:
         # subscribed mode — track usage without touching balance
@@ -197,11 +208,12 @@ def record_usage(org, units: int, format: str, description: str, user=None, sche
             format=format,
             schedule=schedule,
             created_by=user,
+            unit_rate=rate,
         )
 
     logger.debug(
         'Recorded %s usage: %s units × $%s = $%s for org %s',
-        format, units, get_rate(format), cost, org.clerk_org_id,
+        format, units, rate, cost, org.clerk_org_id,
     )
 
 
@@ -237,6 +249,7 @@ def refund_usage(org, schedule) -> None:
         return
 
     amount = original_tx.amount
+    original_rate = original_tx.unit_rate
     failure_category = getattr(schedule, 'failure_category', None) or 'unknown'
     description = f'Refund: send failed ({failure_category})'
 
@@ -255,6 +268,7 @@ def refund_usage(org, schedule) -> None:
                 format=getattr(schedule, 'format', None),
                 schedule=schedule,
                 created_by=None,
+                unit_rate=original_rate,
             )
     else:
         current_balance = get_balance(org)
@@ -267,6 +281,7 @@ def refund_usage(org, schedule) -> None:
             format=getattr(schedule, 'format', None),
             schedule=schedule,
             created_by=None,
+            unit_rate=original_rate,
         )
 
     logger.info(
@@ -278,8 +293,11 @@ def refund_usage(org, schedule) -> None:
 def build_line_items(org, period_start: datetime, period_end: datetime) -> list[InvoiceLineItem]:
     """Aggregate CreditTransaction records into invoice line items.
 
-    Groups by format, nets usage minus refunds. Returns a list of
+    Groups by (format, unit_rate), nets usage minus refunds. Returns a list of
     InvoiceLineItem dataclasses, or an empty list if net usage is zero.
+
+    Transactions with unit_rate=NULL (legacy rows created before per-org rates)
+    are grouped separately and fall back to get_rate(format, org).
     """
     usage_qs = CreditTransaction.objects.filter(
         organisation=org,
@@ -289,33 +307,36 @@ def build_line_items(org, period_start: datetime, period_end: datetime) -> list[
         format__isnull=False,
     )
 
-    formats = list(usage_qs.values_list('format', flat=True).distinct())
+    groups = list(
+        usage_qs.values_list('format', 'unit_rate').distinct()
+    )
     logger.info(
-        'build_line_items: org=%s period=%s to %s formats=%s qs_count=%d',
-        org.clerk_org_id, period_start, period_end, formats, usage_qs.count(),
+        'build_line_items: org=%s period=%s to %s groups=%s qs_count=%d',
+        org.clerk_org_id, period_start, period_end, groups, usage_qs.count(),
     )
     line_items = []
 
-    for fmt in formats:
-        usage_total = usage_qs.filter(
-            format=fmt,
+    for fmt, stored_rate in groups:
+        group_qs = usage_qs.filter(format=fmt, unit_rate=stored_rate) if stored_rate is not None \
+            else usage_qs.filter(format=fmt, unit_rate__isnull=True)
+
+        usage_total = group_qs.filter(
             transaction_type=CreditTransaction.USAGE,
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
-        refund_total = usage_qs.filter(
-            format=fmt,
+        refund_total = group_qs.filter(
             transaction_type=CreditTransaction.REFUND,
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
         net_amount = usage_total - refund_total
         logger.info(
-            'build_line_items: format=%s usage=%s refund=%s net=%s',
-            fmt, usage_total, refund_total, net_amount,
+            'build_line_items: format=%s rate=%s usage=%s refund=%s net=%s',
+            fmt, stored_rate, usage_total, refund_total, net_amount,
         )
         if net_amount <= 0:
             continue
 
-        rate = get_rate(fmt)
+        rate = stored_rate.normalize() if stored_rate is not None else get_rate(fmt, org)
         quantity = int(net_amount / rate) if rate > 0 else 0
 
         line_items.append(InvoiceLineItem(

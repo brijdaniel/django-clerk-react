@@ -523,3 +523,117 @@ class TestGetRate:
         from app.utils.billing import get_rate
         with pytest.raises(ValueError, match='No billing rate configured'):
             get_rate('fax')
+
+    def test_returns_global_default_without_org(self):
+        from app.utils.billing import get_rate
+        assert get_rate('sms') == Decimal('0.05')
+        assert get_rate('mms') == Decimal('0.20')
+
+    @pytest.mark.django_db
+    def test_returns_global_default_when_no_config_override(self):
+        from app.utils.billing import get_rate
+        org = OrganisationFactory()
+        assert get_rate('sms', org) == Decimal('0.05')
+
+    @pytest.mark.django_db
+    def test_returns_per_org_override(self):
+        from app.utils.billing import get_rate
+        org = OrganisationFactory()
+        ConfigFactory(organisation=org, name='sms_rate', value='0.03')
+        assert get_rate('sms', org) == Decimal('0.03')
+
+    @pytest.mark.django_db
+    def test_per_org_override_does_not_affect_other_orgs(self):
+        from app.utils.billing import get_rate
+        org_a = OrganisationFactory()
+        org_b = OrganisationFactory()
+        ConfigFactory(organisation=org_a, name='sms_rate', value='0.03')
+        assert get_rate('sms', org_a) == Decimal('0.03')
+        assert get_rate('sms', org_b) == Decimal('0.05')  # global default
+
+    @pytest.mark.django_db
+    def test_per_org_mms_override(self):
+        from app.utils.billing import get_rate
+        org = OrganisationFactory()
+        ConfigFactory(organisation=org, name='mms_rate', value='0.10')
+        assert get_rate('mms', org) == Decimal('0.10')
+
+
+@pytest.mark.django_db
+class TestUnitRateOnTransaction:
+    """Tests that unit_rate is stored on CreditTransaction records."""
+
+    def test_trial_deduct_stores_unit_rate(self):
+        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
+        record_usage(org, 1, 'sms', 'test')
+        tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
+        assert tx.unit_rate == Decimal('0.05')
+
+    def test_subscribed_usage_stores_unit_rate(self):
+        org = OrganisationFactory(credit_balance=Decimal('0.00'), billing_mode='subscribed')
+        record_usage(org, 1, 'mms', 'test')
+        tx = CreditTransaction.objects.get(organisation=org, transaction_type='usage')
+        assert tx.unit_rate == Decimal('0.20')
+
+    def test_stores_per_org_override_rate(self):
+        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
+        ConfigFactory(organisation=org, name='sms_rate', value='0.03')
+        record_usage(org, 1, 'sms', 'test')
+        tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
+        assert tx.unit_rate == Decimal('0.03')
+        assert tx.amount == Decimal('0.03')
+
+
+@pytest.mark.django_db
+class TestCheckCanSendWithOrgRate:
+    """Tests that check_can_send uses per-org rate overrides."""
+
+    def test_custom_rate_affects_cost_check(self):
+        org = OrganisationFactory(
+            credit_balance=Decimal('0.04'),
+            billing_mode=Organisation.BILLING_TRIAL,
+        )
+        # Default rate $0.05 would block, custom rate $0.03 should allow
+        ConfigFactory(organisation=org, name='sms_rate', value='0.03')
+        allowed, error = check_can_send(org, units=1, format='sms')
+        assert allowed is True
+
+    def test_custom_rate_blocks_when_insufficient(self):
+        org = OrganisationFactory(
+            credit_balance=Decimal('0.02'),
+            billing_mode=Organisation.BILLING_TRIAL,
+        )
+        ConfigFactory(organisation=org, name='sms_rate', value='0.03')
+        allowed, error = check_can_send(org, units=1, format='sms')
+        assert allowed is False
+
+
+@pytest.mark.django_db
+class TestBuildLineItemsWithMixedRates:
+    """Tests that build_line_items groups by (format, unit_rate) correctly."""
+
+    def test_mixed_rates_produce_separate_line_items(self):
+        org = OrganisationFactory(billing_mode='subscribed', credit_balance=Decimal('0.00'))
+        user = UserFactory()
+
+        # Record 2 SMS at $0.05
+        record_usage(org, 1, 'sms', 'SMS 1', user)
+        record_usage(org, 1, 'sms', 'SMS 2', user)
+
+        # Change org rate to $0.03 and record 3 more
+        ConfigFactory(organisation=org, name='sms_rate', value='0.03')
+        record_usage(org, 1, 'sms', 'SMS 3', user)
+        record_usage(org, 1, 'sms', 'SMS 4', user)
+        record_usage(org, 1, 'sms', 'SMS 5', user)
+
+        start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = timezone.now() + timezone.timedelta(seconds=1)
+
+        result = build_line_items(org, start, end)
+
+        assert len(result) == 2
+        by_rate = {item.unit_amount: item for item in result}
+        assert by_rate[Decimal('0.05')].quantity == 2
+        assert by_rate[Decimal('0.05')].amount == Decimal('0.10')
+        assert by_rate[Decimal('0.03')].quantity == 3
+        assert by_rate[Decimal('0.03')].amount == Decimal('0.09')

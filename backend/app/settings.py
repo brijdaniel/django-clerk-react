@@ -215,8 +215,8 @@ CLERK_AUTHORIZED_PARTIES = os.environ.get('CLERK_AUTHORIZED_PARTIES', 'http://lo
 
 # Billing
 FREE_CREDIT_AMOUNT = _Decimal(os.environ.get('FREE_CREDIT_AMOUNT', '10.00'))
-SMS_RATE = _Decimal(os.environ.get('SMS_RATE', '0.05'))
-MMS_RATE = _Decimal(os.environ.get('MMS_RATE', '0.20'))
+SMS_RATE = _Decimal(os.environ.get('SMS_RATE', '0.10'))
+MMS_RATE = _Decimal(os.environ.get('MMS_RATE', '0.50'))
 
 # Metered billing provider (auto-selects Stripe when STRIPE_SECRET_KEY is set)
 METERED_BILLING_PROVIDER_CLASS = (

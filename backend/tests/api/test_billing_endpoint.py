@@ -173,6 +173,20 @@ class TestBillingSummaryFields:
         assert usage['mms']['spend'] == '0.20'
         assert usage['mms']['rate'] == '0.20'
 
+    def test_monthly_usage_shows_per_org_rate(self, user, organisation, org_membership):
+        """When an org has a custom rate override, the summary returns that rate."""
+        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.credit_balance = Decimal('10.00')
+        organisation.save()
+        ConfigFactory(organisation=organisation, name='sms_rate', value='0.03')
+        record_usage(organisation, 1, format='sms', description='SMS', user=user)
+
+        response = self._get_admin_response(user, organisation)
+
+        usage = response.data['monthly_usage_by_format']
+        assert usage['sms']['rate'] == '0.03'
+        assert usage['sms']['spend'] == '0.03'
+
     def test_empty_results_when_no_transactions(self, user, organisation, org_membership):
         """results list is empty when no transactions exist."""
         response = self._get_admin_response(user, organisation)

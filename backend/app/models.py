@@ -248,6 +248,7 @@ class CreditTransaction(TenantModel, AuditMixin):
         Schedule, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='credit_transactions'
     )
+    unit_rate = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
 
     class Meta:
         db_table = 'credit_transactions'
