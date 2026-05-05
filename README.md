@@ -90,8 +90,8 @@ cp frontend/.envexample frontend/.env
 | `LOG_LEVEL` | No | `INFO` or `DEBUG` (default: `INFO`) |
 | `LOG_FORMAT` | No | `json` or `text` (default: `json`) |
 | `FREE_CREDIT_AMOUNT` | No | Dollar credits granted to new orgs on signup (default: `10.00`) |
-| `SMS_RATE` | No | Default cost per SMS message part in dollars (default: `0.05`). Can be overridden per org via Config. |
-| `MMS_RATE` | No | Default cost per MMS send in dollars (default: `0.20`). Can be overridden per org via Config. |
+| `SMS_RATE` | No | Default cost per SMS message part in dollars (default: `0.10`). Can be overridden per org via Config. |
+| `MMS_RATE` | No | Default cost per MMS send in dollars (default: `0.50`). Can be overridden per org via Config. |
 | `CELERY_BROKER_URL` | No | Redis URL for Celery broker (default: `redis://redis:6379/0`) |
 | `CELERY_RESULT_BACKEND` | No | Redis URL for task results (default: `redis://redis:6379/0`) |
 | `MESSAGE_MAX_RETRIES` | No | Max retry attempts per message (default: `3`) |

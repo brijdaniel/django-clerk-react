@@ -199,9 +199,9 @@ describe('BillingLayout', () => {
     renderWithProviders(<BillingWithSuspense />)
 
     await waitFor(() => {
-      expect(screen.getByTestId('format-sms')).toHaveTextContent('sms: $1.00 @ $0.05')
+      expect(screen.getByTestId('format-sms')).toHaveTextContent('sms: $1.00 @ $0.10')
     })
-    expect(screen.getByTestId('format-mms')).toHaveTextContent('mms: $0.50 @ $0.20')
+    expect(screen.getByTestId('format-mms')).toHaveTextContent('mms: $0.50 @ $0.50')
   })
 
   it('renders transaction history', async () => {
@@ -211,7 +211,7 @@ describe('BillingLayout', () => {
           createBillingSummary({
             results: [
               createCreditTransaction({ id: 1, transaction_type: 'grant', amount: '10.00' }),
-              createCreditTransaction({ id: 2, transaction_type: 'deduct', amount: '0.05', format: 'sms' }),
+              createCreditTransaction({ id: 2, transaction_type: 'deduct', amount: '0.10', format: 'sms' }),
             ],
             pagination: { total: 2, page: 1, limit: 50, totalPages: 1, hasNext: false, hasPrev: false },
           })
@@ -224,7 +224,7 @@ describe('BillingLayout', () => {
     await waitFor(() => {
       expect(screen.getByTestId('tx-1')).toHaveTextContent('grant: $10.00')
     })
-    expect(screen.getByTestId('tx-2')).toHaveTextContent('deduct: $0.05')
+    expect(screen.getByTestId('tx-2')).toHaveTextContent('deduct: $0.10')
     expect(screen.getByTestId('tx-count')).toHaveTextContent('2')
   })
 

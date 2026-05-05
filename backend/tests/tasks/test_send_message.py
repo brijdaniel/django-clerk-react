@@ -9,6 +9,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from django.conf import settings
 from django.utils import timezone
 
 from app.models import (
@@ -173,7 +174,7 @@ class TestSendMessageTransientFailure:
         schedule.refresh_from_db()
         assert schedule.status == ScheduleStatus.FAILED
         # Balance should be restored
-        assert get_balance(organisation) == balance_before + Decimal('0.05')
+        assert get_balance(organisation) == balance_before + settings.SMS_RATE
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +204,8 @@ class TestSendMessagePermanentFailure:
 
         send_message(schedule.pk)
 
-        # SMS rate is $0.05; refund restores it
-        assert get_balance(organisation) == balance_before + Decimal('0.05')
+        # Refund restores SMS rate
+        assert get_balance(organisation) == balance_before + settings.SMS_RATE
         assert CreditTransaction.objects.filter(
             organisation=organisation,
             schedule=schedule,

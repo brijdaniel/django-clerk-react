@@ -13,6 +13,7 @@ Tests:
 import pytest
 from decimal import Decimal
 
+from django.conf import settings
 from django.utils import timezone
 
 from app.models import CreditTransaction, Organisation, Schedule, ScheduleStatus, MessageFormat
@@ -111,9 +112,10 @@ class TestCheckCanSend:
         assert allowed is True
 
     def test_multi_unit_cost_check(self):
-        """Cost = units * rate; 10 SMS at $0.05 = $0.50."""
+        """Cost = units * rate; balance just under the cost of 10 SMS should block."""
+        cost_of_10 = 10 * settings.SMS_RATE
         org = OrganisationFactory(
-            credit_balance=Decimal('0.40'),
+            credit_balance=cost_of_10 - Decimal('0.01'),
             billing_mode=Organisation.BILLING_TRIAL,
         )
         allowed, error = check_can_send(org, units=10, format='sms')
@@ -148,7 +150,7 @@ class TestRecordUsage:
             billing_mode=Organisation.BILLING_TRIAL,
         )
         record_usage(org, 1, format='sms', description='Test SMS')
-        assert get_balance(org) == Decimal('0.95')  # 1.00 - 0.05
+        assert get_balance(org) == Decimal('1.00') - settings.SMS_RATE
 
     def test_trial_creates_deduct_transaction(self):
         from app.models import CreditTransaction
@@ -158,7 +160,7 @@ class TestRecordUsage:
         )
         record_usage(org, 1, format='sms', description='Test SMS')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
-        assert tx.amount == Decimal('0.05')
+        assert tx.amount == settings.SMS_RATE
         assert tx.format == 'sms'
 
     def test_subscribed_does_not_change_balance(self):
@@ -177,7 +179,7 @@ class TestRecordUsage:
         )
         record_usage(org, 1, format='mms', description='Test MMS')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='usage')
-        assert tx.amount == Decimal('0.20')
+        assert tx.amount == settings.MMS_RATE
         assert tx.format == 'mms'
 
     def test_records_created_by_user(self):
@@ -197,7 +199,7 @@ class TestRecordUsage:
             billing_mode=Organisation.BILLING_TRIAL,
         )
         record_usage(org, 1, format='mms', description='Test MMS')
-        assert get_balance(org) == Decimal('0.80')  # 1.00 - 0.20
+        assert get_balance(org) == Decimal('1.00') - settings.MMS_RATE
 
 
 @pytest.mark.django_db
@@ -210,7 +212,7 @@ class TestGetMonthlyUsage:
         record_usage(org, 2, format='sms', description='Send 1')
         record_usage(org, 1, format='sms', description='Send 2')
         total = get_monthly_usage(org, 'sms')
-        assert total == Decimal('0.15')  # 3 * 0.05
+        assert total == 3 * settings.SMS_RATE
 
     def test_excludes_other_formats(self):
         org = OrganisationFactory(
@@ -219,8 +221,8 @@ class TestGetMonthlyUsage:
         )
         record_usage(org, 1, format='sms', description='SMS')
         record_usage(org, 1, format='mms', description='MMS')
-        assert get_monthly_usage(org, 'sms') == Decimal('0.05')
-        assert get_monthly_usage(org, 'mms') == Decimal('0.20')
+        assert get_monthly_usage(org, 'sms') == settings.SMS_RATE
+        assert get_monthly_usage(org, 'mms') == settings.MMS_RATE
 
     def test_returns_zero_when_no_usage(self):
         org = OrganisationFactory()
@@ -237,7 +239,7 @@ class TestGetTotalMonthlySpend:
         record_usage(org, 1, format='sms', description='SMS')
         record_usage(org, 1, format='mms', description='MMS')
         total = get_total_monthly_spend(org)
-        assert total == Decimal('0.25')  # 0.05 + 0.20
+        assert total == settings.SMS_RATE + settings.MMS_RATE
 
     def test_excludes_grants(self):
         org = OrganisationFactory(credit_balance=Decimal('0.00'))
@@ -279,7 +281,7 @@ class TestRefundUsage:
 
         refund_usage(org, schedule)
 
-        assert get_balance(org) == balance_after_deduct + Decimal('0.05')
+        assert get_balance(org) == balance_after_deduct + settings.SMS_RATE
 
     def test_trial_refund_creates_refund_transaction(self):
         org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
@@ -347,7 +349,7 @@ class TestRefundUsage:
         assert get_balance(org) == balance_before
 
     def test_refund_multi_part_sms(self):
-        """A 2-part SMS ($0.10) is fully refunded — amount scales with message_parts."""
+        """A 2-part SMS is fully refunded — amount scales with message_parts."""
         org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = Schedule.objects.create(
@@ -367,11 +369,12 @@ class TestRefundUsage:
 
         refund_usage(org, schedule)
 
-        assert get_balance(org) == balance_after_deduct + Decimal('0.10')
+        expected_refund = 2 * settings.SMS_RATE
+        assert get_balance(org) == balance_after_deduct + expected_refund
         refund_tx = CreditTransaction.objects.get(
             organisation=org, schedule=schedule, transaction_type=CreditTransaction.REFUND
         )
-        assert refund_tx.amount == Decimal('0.10')
+        assert refund_tx.amount == expected_refund
 
     def test_refund_amount_matches_original_charge(self):
         org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
@@ -387,8 +390,8 @@ class TestRefundUsage:
             schedule=schedule,
             transaction_type=CreditTransaction.REFUND,
         )
-        assert refund_tx.amount == Decimal('0.05')
-        assert get_balance(org) == balance_before_refund + Decimal('0.05')
+        assert refund_tx.amount == settings.SMS_RATE
+        assert get_balance(org) == balance_before_refund + settings.SMS_RATE
 
 
 @pytest.mark.django_db
@@ -418,7 +421,7 @@ class TestBuildLineItems:
 
         assert len(result) == 1
         assert result[0].quantity == 3
-        assert result[0].amount == Decimal('0.15')  # 3 × $0.05
+        assert result[0].amount == 3 * settings.SMS_RATE
 
     def test_nets_refunds_against_usage(self):
         org = OrganisationFactory(billing_mode='subscribed', credit_balance=Decimal('0.00'))
@@ -446,7 +449,7 @@ class TestBuildLineItems:
 
         assert len(result) == 1
         assert result[0].quantity == 1  # 2 usage - 1 refund = 1 net
-        assert result[0].amount == Decimal('0.05')
+        assert result[0].amount == settings.SMS_RATE
 
     def test_zero_net_usage_returns_empty(self):
         org = OrganisationFactory(billing_mode='subscribed', credit_balance=Decimal('0.00'))
@@ -510,12 +513,13 @@ class TestGetCurrentMonthPreview:
 
         result = get_current_month_preview(org)
 
-        assert result['total'] == '0.10'
+        expected_total = 2 * settings.SMS_RATE
+        assert result['total'] == str(expected_total)
         assert len(result['line_items']) == 1
         assert result['line_items'][0]['format'] == 'sms'
         assert result['line_items'][0]['quantity'] == 2
-        assert result['line_items'][0]['rate'] == '0.05'
-        assert result['line_items'][0]['amount'] == '0.10'
+        assert result['line_items'][0]['rate'] == str(settings.SMS_RATE.normalize())
+        assert result['line_items'][0]['amount'] == str(expected_total)
 
 
 class TestGetRate:
@@ -526,14 +530,14 @@ class TestGetRate:
 
     def test_returns_global_default_without_org(self):
         from app.utils.billing import get_rate
-        assert get_rate('sms') == Decimal('0.05')
-        assert get_rate('mms') == Decimal('0.20')
+        assert get_rate('sms') == settings.SMS_RATE
+        assert get_rate('mms') == settings.MMS_RATE
 
     @pytest.mark.django_db
     def test_returns_global_default_when_no_config_override(self):
         from app.utils.billing import get_rate
         org = OrganisationFactory()
-        assert get_rate('sms', org) == Decimal('0.05')
+        assert get_rate('sms', org) == settings.SMS_RATE
 
     @pytest.mark.django_db
     def test_returns_per_org_override(self):
@@ -549,7 +553,7 @@ class TestGetRate:
         org_b = OrganisationFactory()
         ConfigFactory(organisation=org_a, name='sms_rate', value='0.03')
         assert get_rate('sms', org_a) == Decimal('0.03')
-        assert get_rate('sms', org_b) == Decimal('0.05')  # global default
+        assert get_rate('sms', org_b) == settings.SMS_RATE  # global default
 
     @pytest.mark.django_db
     def test_per_org_mms_override(self):
@@ -567,13 +571,13 @@ class TestUnitRateOnTransaction:
         org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
         record_usage(org, 1, 'sms', 'test')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
-        assert tx.unit_rate == Decimal('0.05')
+        assert tx.unit_rate == settings.SMS_RATE
 
     def test_subscribed_usage_stores_unit_rate(self):
         org = OrganisationFactory(credit_balance=Decimal('0.00'), billing_mode='subscribed')
         record_usage(org, 1, 'mms', 'test')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='usage')
-        assert tx.unit_rate == Decimal('0.20')
+        assert tx.unit_rate == settings.MMS_RATE
 
     def test_stores_per_org_override_rate(self):
         org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
@@ -593,7 +597,7 @@ class TestCheckCanSendWithOrgRate:
             credit_balance=Decimal('0.04'),
             billing_mode=Organisation.BILLING_TRIAL,
         )
-        # Default rate $0.05 would block, custom rate $0.03 should allow
+        # Default rate would block, custom rate $0.03 should allow
         ConfigFactory(organisation=org, name='sms_rate', value='0.03')
         allowed, error = check_can_send(org, units=1, format='sms')
         assert allowed is True
@@ -616,7 +620,7 @@ class TestBuildLineItemsWithMixedRates:
         org = OrganisationFactory(billing_mode='subscribed', credit_balance=Decimal('0.00'))
         user = UserFactory()
 
-        # Record 2 SMS at $0.05
+        # Record 2 SMS at default rate
         record_usage(org, 1, 'sms', 'SMS 1', user)
         record_usage(org, 1, 'sms', 'SMS 2', user)
 
@@ -633,7 +637,8 @@ class TestBuildLineItemsWithMixedRates:
 
         assert len(result) == 2
         by_rate = {item.unit_amount: item for item in result}
-        assert by_rate[Decimal('0.05')].quantity == 2
-        assert by_rate[Decimal('0.05')].amount == Decimal('0.10')
+        default_rate = settings.SMS_RATE.normalize()
+        assert by_rate[default_rate].quantity == 2
+        assert by_rate[default_rate].amount == 2 * settings.SMS_RATE
         assert by_rate[Decimal('0.03')].quantity == 3
         assert by_rate[Decimal('0.03')].amount == Decimal('0.09')

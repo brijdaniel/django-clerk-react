@@ -37,8 +37,8 @@ LOG_FORMAT=json
 
 # Billing
 FREE_CREDIT_AMOUNT=10.00
-SMS_RATE=0.05
-MMS_RATE=0.20
+SMS_RATE=0.10
+MMS_RATE=0.50
 
 # Stripe (metered billing — required if using StripeMeteredBillingProvider)
 STRIPE_SECRET_KEY=

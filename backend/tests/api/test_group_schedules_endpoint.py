@@ -12,6 +12,7 @@ CRITICAL TESTS for parent/child schedule atomicity:
 import pytest
 from datetime import timedelta
 from decimal import Decimal
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 
@@ -566,8 +567,6 @@ class TestGroupScheduleRetrieve:
 class TestGroupScheduleBilling:
     """Billing gate and credit reservation/refund for group scheduled sends."""
 
-    SMS_RATE = Decimal('0.05')
-
     def _make_payload(self, group, scheduled_time=None):
         return {
             'name': 'Billing test campaign',
@@ -612,7 +611,7 @@ class TestGroupScheduleBilling:
 
         assert response.status_code == status.HTTP_201_CREATED
         organisation.refresh_from_db()
-        expected_balance = Decimal('10.00') - (member_count * 1 * self.SMS_RATE)
+        expected_balance = Decimal('10.00') - (member_count * 1 * settings.SMS_RATE)
         assert organisation.credit_balance == expected_balance
 
     def test_create_does_not_reserve_credits_for_subscribed_org(

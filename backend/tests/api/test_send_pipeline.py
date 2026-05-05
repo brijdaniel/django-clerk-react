@@ -15,6 +15,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
+from django.conf import settings
 from django.utils import timezone
 
 from app.models import CreditTransaction, Organisation, Schedule, ScheduleStatus
@@ -204,7 +205,6 @@ class TestGroupSendPipeline:
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 
         member_count = 2
-        sms_rate = Decimal('0.05')
         group, _ = create_contact_group_with_members(organisation, num_members=member_count, user=user)
         future_time = timezone.now() + timezone.timedelta(hours=1)
 
@@ -223,7 +223,7 @@ class TestGroupSendPipeline:
         Schedule.objects.filter(parent_id=response.data['id']).update(scheduled_time=past)
 
         organisation.refresh_from_db()
-        expected_after_create = Decimal('10.00') - (member_count * 1 * sms_rate)
+        expected_after_create = Decimal('10.00') - (member_count * 1 * settings.SMS_RATE)
         assert organisation.credit_balance == expected_after_create
 
         dispatch_due_messages()

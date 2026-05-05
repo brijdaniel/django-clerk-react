@@ -13,6 +13,8 @@ import pytest
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.conf import settings
+
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -152,8 +154,8 @@ class TestBillingSummaryFields:
 
         response = self._get_admin_response(user, organisation)
 
-        # 2 × $0.05 = $0.10
-        assert response.data['total_monthly_spend'] == '0.10'
+        expected_spend = str(2 * settings.SMS_RATE)
+        assert response.data['total_monthly_spend'] == expected_spend
 
     def test_monthly_usage_by_format_populated(self, user, organisation, org_membership):
         """monthly_usage_by_format contains entries for each format used."""
@@ -168,10 +170,10 @@ class TestBillingSummaryFields:
         usage = response.data['monthly_usage_by_format']
         assert 'sms' in usage
         assert 'mms' in usage
-        assert usage['sms']['spend'] == '0.05'
-        assert usage['sms']['rate'] == '0.05'
-        assert usage['mms']['spend'] == '0.20'
-        assert usage['mms']['rate'] == '0.20'
+        assert usage['sms']['spend'] == str(settings.SMS_RATE)
+        assert usage['sms']['rate'] == str(settings.SMS_RATE)
+        assert usage['mms']['spend'] == str(settings.MMS_RATE)
+        assert usage['mms']['rate'] == str(settings.MMS_RATE)
 
     def test_monthly_usage_shows_per_org_rate(self, user, organisation, org_membership):
         """When an org has a custom rate override, the summary returns that rate."""
@@ -354,7 +356,7 @@ class TestInvoicePreview:
         response = client.get('/api/billing/invoice-preview/')
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data['total'] == '0.10'
+        assert response.data['total'] == str(2 * settings.SMS_RATE)
         assert len(response.data['line_items']) == 1
         assert response.data['line_items'][0]['quantity'] == 2
 

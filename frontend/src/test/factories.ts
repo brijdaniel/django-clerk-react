@@ -160,8 +160,8 @@ export function createBillingSummary(overrides: Partial<BillingSummaryResponse> 
     monthly_limit: '50.00',
     total_monthly_spend: '1.50',
     monthly_usage_by_format: {
-      sms: { spend: '1.00', rate: '0.05' },
-      mms: { spend: '0.50', rate: '0.20' },
+      sms: { spend: '1.00', rate: '0.10' },
+      mms: { spend: '0.50', rate: '0.50' },
     },
     latest_invoice: null,
     results: [createCreditTransaction()],
@@ -217,7 +217,7 @@ export function createInvoicePreview(overrides: Partial<InvoicePreviewResponse> 
     period_start: '2026-04-01T00:00:00+10:30',
     period_end: '2026-04-22T12:00:00+10:30',
     line_items: [
-      { format: 'sms', quantity: 100, rate: '0.05', amount: '5.00' },
+      { format: 'sms', quantity: 100, rate: '0.10', amount: '10.00' },
     ],
     ...overrides,
   }

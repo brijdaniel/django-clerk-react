@@ -16,6 +16,7 @@ These are CRITICAL tests as they verify:
 
 import pytest
 from decimal import Decimal
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from rest_framework import status
@@ -513,8 +514,8 @@ class TestTrialCreditReservation:
         }, format='json')
 
         assert response.status_code == status.HTTP_202_ACCEPTED
-        # $0.05 SMS rate deducted immediately
-        assert get_balance(organisation) == balance_before - Decimal('0.05')
+        # SMS rate deducted immediately
+        assert get_balance(organisation) == balance_before - settings.SMS_RATE
 
     def test_send_sms_subscribed_does_not_reserve_credits(
         self, authenticated_client, organisation, mock_send_message_task
@@ -535,7 +536,7 @@ class TestTrialCreditReservation:
     def test_send_mms_trial_reserves_credits(
         self, authenticated_client, organisation, mock_send_message_task
     ):
-        """Trial org MMS send deducts $0.20 immediately."""
+        """Trial org MMS send deducts MMS rate immediately."""
         organisation.billing_mode = Organisation.BILLING_TRIAL
         organisation.save()
         grant_credits(organisation, Decimal('1.00'), 'test grant')
@@ -548,7 +549,7 @@ class TestTrialCreditReservation:
         }, format='json')
 
         assert response.status_code == status.HTTP_202_ACCEPTED
-        assert get_balance(organisation) == balance_before - Decimal('0.20')
+        assert get_balance(organisation) == balance_before - settings.MMS_RATE
 
     def test_send_to_group_trial_reserves_credits_per_member(
         self, authenticated_client, organisation, user, mock_send_message_task
@@ -567,8 +568,8 @@ class TestTrialCreditReservation:
         })
 
         assert response.status_code == status.HTTP_202_ACCEPTED
-        # 3 members × $0.05 = $0.15
-        assert get_balance(organisation) == balance_before - Decimal('0.15')
+        # 3 members × SMS rate
+        assert get_balance(organisation) == balance_before - (3 * settings.SMS_RATE)
 
 
 # ---------------------------------------------------------------------------

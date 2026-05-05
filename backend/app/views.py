@@ -1150,13 +1150,15 @@ class BillingViewSet(TenantScopedMixin, viewsets.GenericViewSet):
         """
         if not settings.TEST:
             return Response({'detail': 'Not available.'}, status=status.HTTP_403_FORBIDDEN)
+        fmt = request.data.get('format', 'sms')
         tx = CreditTransaction.objects.create(
             organisation=request.org,
             transaction_type=CreditTransaction.USAGE,
             amount=Decimal(str(request.data['amount'])),
             balance_after=request.org.credit_balance,
             description=request.data.get('description', 'E2E test usage'),
-            format=request.data.get('format', 'sms'),
+            format=fmt,
+            unit_rate=get_rate(fmt, request.org),
         )
         backdate_days = request.data.get('backdate_days')
         if backdate_days:
