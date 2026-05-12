@@ -214,7 +214,7 @@ CLERK_AUTHORIZED_PARTIES = os.environ.get('CLERK_AUTHORIZED_PARTIES', 'http://lo
 
 
 # Billing
-FREE_CREDIT_AMOUNT = _Decimal(os.environ.get('FREE_CREDIT_AMOUNT', '10.00'))
+FREE_CREDIT_AMOUNT = _Decimal(os.environ.get('FREE_CREDIT_AMOUNT', '5.00'))
 SMS_RATE = _Decimal(os.environ.get('SMS_RATE', '0.10'))
 MMS_RATE = _Decimal(os.environ.get('MMS_RATE', '0.50'))
 
