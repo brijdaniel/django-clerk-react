@@ -78,9 +78,14 @@ test.describe('Billing Page', () => {
   })
 
   test('shows exhausted balance warning when balance is zero (trial only)', async ({ page }) => {
-    // This warning only shows for trial orgs — skip if Clerk has an active subscription
-    await page.goto('/app/billing')
+    // This warning only shows for trial orgs — skip if Clerk has an active subscription.
+    // Wait for networkidle so Clerk subscription data has time to load before checking.
+    await page.goto('/app/billing', { waitUntil: 'networkidle' })
     await expect(page.getByText('Billing').first()).toBeVisible({ timeout: 10000 })
+    // Give Clerk subscription hook time to resolve — check for either Trial balance or Subscribed badge
+    await expect(
+      page.getByText('Trial balance').or(page.getByText('Subscribed')).first()
+    ).toBeVisible({ timeout: 10000 })
     const isSubscribed = await page.getByText('Subscribed').first().isVisible().catch(() => false)
     if (isSubscribed) {
       // Subscribed orgs don't show balance warnings
