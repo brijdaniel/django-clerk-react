@@ -53,24 +53,24 @@ class TestStorageProviderValidation:
             provider._validate_file(pdf, 'application/pdf')
 
     def test_validate_file_rejects_oversized(self):
-        """Files >400KB rejected."""
+        """Files exceeding MAX_FILE_SIZE rejected."""
         provider = MockStorageProvider()
         large = SimpleUploadedFile(
             'large.png',
-            b'x' * (500 * 1024),  # 500KB
+            b'x' * (StorageProvider.MAX_FILE_SIZE + 1),
             content_type='image/png'
         )
 
         with pytest.raises(ValidationError) as exc_info:
             provider._validate_file(large, 'image/png')
-        assert '400' in str(exc_info.value)
+        assert 'File too large' in str(exc_info.value)
 
     def test_validate_file_accepts_at_limit(self):
-        """Files exactly 400KB accepted."""
+        """Files exactly at MAX_FILE_SIZE accepted."""
         provider = MockStorageProvider()
         at_limit = SimpleUploadedFile(
             'limit.png',
-            b'x' * (400 * 1024),  # Exactly 400KB
+            b'x' * StorageProvider.MAX_FILE_SIZE,
             content_type='image/png'
         )
         provider._validate_file(at_limit, 'image/png')  # Should not raise
@@ -140,14 +140,14 @@ class TestMockStorageProvider:
         provider = MockStorageProvider()
         large = SimpleUploadedFile(
             'large.jpg',
-            b'x' * (500 * 1024),
+            b'x' * (StorageProvider.MAX_FILE_SIZE + 1),
             content_type='image/jpeg'
         )
 
         with pytest.raises(ValidationError) as exc_info:
             provider.upload_file(large, 'large.jpg', 'image/jpeg')
 
-        assert '400' in str(exc_info.value)
+        assert 'File too large' in str(exc_info.value)
 
     def test_upload_file_generates_unique_filename(self):
         """upload_file generates unique file_id."""

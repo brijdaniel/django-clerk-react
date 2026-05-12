@@ -50,13 +50,12 @@ class TestStorageProviderValidation:
         """Raises ValidationError for files exceeding size limit."""
         provider = MockStorageProvider()
         file_obj = Mock()
-        file_obj.size = 500 * 1024  # 500KB, exceeds 400KB limit
+        file_obj.size = StorageProvider.MAX_FILE_SIZE + 1
 
         with pytest.raises(ValidationError) as exc_info:
             provider._validate_file(file_obj, 'image/png')
 
         assert 'File too large' in str(exc_info.value.detail)
-        assert '400KB' in str(exc_info.value.detail)
 
 
 class TestExtractBlobName:

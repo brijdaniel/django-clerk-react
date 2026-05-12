@@ -35,7 +35,7 @@ class StorageProvider(ABC):
         pass
 
     ALLOWED_TYPES = {'image/png', 'image/jpeg', 'image/jpg', 'image/gif'}
-    MAX_FILE_SIZE = 400 * 1024  # 400KB
+    MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
 
     def _validate_file(self, file_obj, content_type: str) -> None:
         """Validate file before storage. Raises ValidationError on failure."""
@@ -47,8 +47,8 @@ class StorageProvider(ABC):
             raise ValidationError(f'Invalid file type. Allowed: {allowed}')
 
         if file_obj.size > self.MAX_FILE_SIZE:
-            max_kb = self.MAX_FILE_SIZE // 1024
-            raise ValidationError(f'File too large. Maximum size: {max_kb}KB')
+            max_mb = self.MAX_FILE_SIZE // (1024 * 1024)
+            raise ValidationError(f'File too large. Maximum size: {max_mb}MB')
 
     def _generate_unique_filename(self, original_filename: str) -> str:
         """Generate UUID-based filename preserving extension."""

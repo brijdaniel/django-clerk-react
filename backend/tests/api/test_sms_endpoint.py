@@ -22,6 +22,7 @@ from django.utils import timezone
 from rest_framework import status
 
 from app.models import MessageFormat, Organisation, Schedule, ScheduleStatus
+from app.utils.storage import StorageProvider
 from app.utils.billing import get_balance, grant_credits
 from tests.factories import (
     ConfigFactory,
@@ -440,10 +441,10 @@ class TestUploadFile:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
     def test_upload_file_validates_file_size(self, authenticated_client, mock_storage_provider):
-        """Files >400KB rejected."""
+        """Files exceeding MAX_FILE_SIZE rejected."""
         large_image = SimpleUploadedFile(
             'large.jpg',
-            b'x' * (500 * 1024),  # 500KB
+            b'x' * (StorageProvider.MAX_FILE_SIZE + 1),
             content_type='image/jpeg'
         )
 
@@ -454,7 +455,7 @@ class TestUploadFile:
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert '400' in str(response.data)  # "400KB" in error
+        assert 'File too large' in str(response.data)
 
     def test_upload_file_requires_file(self, authenticated_client):
         """Request without file rejected."""

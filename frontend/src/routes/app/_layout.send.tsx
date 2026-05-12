@@ -583,7 +583,7 @@ function SendContent() {
                 onFileRemove={handleFileRemove}
                 accept=".png,.jpg,.jpeg,.gif"
                 disabled={uploadingFile}
-                maxSize={400 * 1024}
+                maxSize={2 * 1024 * 1024}
               />
               {uploadingFile && (
                 <div className="mt-2 flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
