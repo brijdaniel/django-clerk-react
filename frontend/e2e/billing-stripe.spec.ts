@@ -62,7 +62,7 @@ test.describe('Stripe Billing Integration', () => {
     await expect(page.getByText('Billing').first()).toBeVisible({ timeout: 5000 })
 
     // Verify we start in prepaid mode
-    await expect(page.getByText('Trial balance').first()).toBeVisible()
+    await expect(page.getByText('Prepaid balance').first()).toBeVisible()
 
     // Open the Manage Plan dialog (button says "Subscribe" in prepaid mode)
     await page.getByRole('button', { name: /Subscribe/i }).first().click()
@@ -277,7 +277,7 @@ test.describe('Stripe Billing Integration', () => {
     // Verify the billing page reflects the change
     await page.goto('/app/billing')
     await expect(
-      page.getByText('Trial balance').first().or(page.getByText('Plan').first())
+      page.getByText('Prepaid balance').first().or(page.getByText('Plan').first())
     ).toBeVisible({ timeout: 10000 })
   })
 })

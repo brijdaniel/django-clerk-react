@@ -51,9 +51,9 @@ test.describe('Billing Page', () => {
   test('displays billing heading and mode badge', async ({ page }) => {
     await page.goto('/app/billing')
     await expect(page.getByText('Billing').first()).toBeVisible({ timeout: 10000 })
-    // Mode badge is either Trial or Subscribed depending on Clerk subscription state
+    // Mode badge is either Prepaid or Subscribed depending on Clerk subscription state
     await expect(
-      page.getByText(/Trial|Subscribed/).first()
+      page.getByText(/Prepaid|Subscribed/).first()
     ).toBeVisible()
   })
 
