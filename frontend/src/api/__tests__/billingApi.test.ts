@@ -91,7 +91,7 @@ describe('billingApi', () => {
     it('getNextPageParam returns next page when hasNext is true', () => {
       const options = getBillingTransactionsInfiniteOptions(client)
       const result = options.getNextPageParam!({
-        billing_mode: 'trial', balance: '10.00', monthly_limit: null,
+        billing_mode: 'prepaid', balance: '10.00', monthly_limit: null,
         total_monthly_spend: '0.00', monthly_usage_by_format: {}, results: [],
         pagination: { total: 100, page: 1, limit: 50, totalPages: 2, hasNext: true, hasPrev: false },
       } as any, [] as any, 1, [] as any)
@@ -101,7 +101,7 @@ describe('billingApi', () => {
     it('getNextPageParam returns undefined when hasNext is false', () => {
       const options = getBillingTransactionsInfiniteOptions(client)
       const result = options.getNextPageParam!({
-        billing_mode: 'trial', balance: '10.00', monthly_limit: null,
+        billing_mode: 'prepaid', balance: '10.00', monthly_limit: null,
         total_monthly_spend: '0.00', monthly_usage_by_format: {}, results: [],
         pagination: { total: 5, page: 1, limit: 50, totalPages: 1, hasNext: false, hasPrev: false },
       } as any, [] as any, 1, [] as any)

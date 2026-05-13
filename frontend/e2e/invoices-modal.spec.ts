@@ -8,7 +8,7 @@
  *   4. Seed current-month usage (for preview)
  *   5. Open the invoices modal and verify data
  *   6. Test bulk download
- *   7. Clean up: revert to trial, restore balance
+ *   7. Clean up: revert to prepaid, restore balance
  *
  * Requirements:
  *   - CLERK_SECRET_KEY (Clerk auth)
@@ -44,7 +44,7 @@ test.describe('Invoices Modal', () => {
 
     const orgId = getOrgId()
 
-    // Reset to trial first (in case a previous run left org as subscribed),
+    // Reset to prepaid first (in case a previous run left org as subscribed),
     // then activate — ensures the webhook handler runs the full setup path
     // including linking billing_customer_id.
     await simulateSubscriptionCanceled(orgId).catch(() => {})

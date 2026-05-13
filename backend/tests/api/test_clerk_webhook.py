@@ -317,7 +317,7 @@ class TestClerkWebhook:
         """subscription.active webhook sets org billing_mode to subscribed."""
         mock_verify.side_effect = mock_webhook_verify
 
-        org = OrganisationFactory(clerk_org_id='org_billing_active', billing_mode=Organisation.BILLING_TRIAL)
+        org = OrganisationFactory(clerk_org_id='org_billing_active', billing_mode=Organisation.BILLING_PREPAID)
 
         payload = {
             'type': 'subscription.active',
@@ -335,8 +335,8 @@ class TestClerkWebhook:
         assert org.billing_mode == Organisation.BILLING_SUBSCRIBED
 
     @patch('svix.Webhook.verify')
-    def test_subscription_updated_canceled_reverts_org_to_trial(self, mock_verify, api_client):
-        """subscription.updated with status=canceled reverts org billing_mode to trial."""
+    def test_subscription_updated_canceled_reverts_org_to_prepaid(self, mock_verify, api_client):
+        """subscription.updated with status=canceled reverts org billing_mode to prepaid."""
         mock_verify.side_effect = mock_webhook_verify
 
         org = OrganisationFactory(clerk_org_id='org_billing_cancel', billing_mode=Organisation.BILLING_SUBSCRIBED)
@@ -354,11 +354,11 @@ class TestClerkWebhook:
 
         assert response.status_code == status.HTTP_200_OK
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     @patch('svix.Webhook.verify')
-    def test_subscription_updated_ended_reverts_org_to_trial(self, mock_verify, api_client):
-        """subscription.updated with status=ended reverts org billing_mode to trial."""
+    def test_subscription_updated_ended_reverts_org_to_prepaid(self, mock_verify, api_client):
+        """subscription.updated with status=ended reverts org billing_mode to prepaid."""
         mock_verify.side_effect = mock_webhook_verify
 
         org = OrganisationFactory(clerk_org_id='org_billing_ended', billing_mode=Organisation.BILLING_SUBSCRIBED)
@@ -376,7 +376,7 @@ class TestClerkWebhook:
 
         assert response.status_code == status.HTTP_200_OK
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     @patch('svix.Webhook.verify')
     def test_subscription_past_due_sets_past_due_billing_mode(self, mock_verify, api_client):

@@ -105,15 +105,15 @@ class TestBillingSummaryFields:
         assert 'results' in data
         assert 'pagination' in data
 
-    def test_trial_billing_mode(self, user, organisation, org_membership):
-        """Trial org shows billing_mode='trial' and current balance."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+    def test_prepaid_billing_mode(self, user, organisation, org_membership):
+        """Prepaid org shows billing_mode='prepaid' and current balance."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('7.50')
         organisation.save()
 
         response = self._get_admin_response(user, organisation)
 
-        assert response.data['billing_mode'] == 'trial'
+        assert response.data['billing_mode'] == 'prepaid'
         assert response.data['balance'] == '7.50'
 
     def test_subscribed_billing_mode(self, user, organisation, org_membership):
@@ -147,7 +147,7 @@ class TestBillingSummaryFields:
 
     def test_total_monthly_spend_reflects_usage(self, user, organisation, org_membership):
         """total_monthly_spend sums usage transactions."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('10.00')
         organisation.save()
         record_usage(organisation, 2, format='sms', description='SMS send', user=user)
@@ -159,7 +159,7 @@ class TestBillingSummaryFields:
 
     def test_monthly_usage_by_format_populated(self, user, organisation, org_membership):
         """monthly_usage_by_format contains entries for each format used."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('10.00')
         organisation.save()
         record_usage(organisation, 1, format='sms', description='SMS', user=user)
@@ -177,7 +177,7 @@ class TestBillingSummaryFields:
 
     def test_monthly_usage_shows_per_org_rate(self, user, organisation, org_membership):
         """When an org has a custom rate override, the summary returns that rate."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('10.00')
         organisation.save()
         ConfigFactory(organisation=organisation, name='sms_rate', value='0.03')
@@ -210,7 +210,7 @@ class TestBillingSummaryFields:
 
     def test_transaction_history_ordered_newest_first(self, user, organisation, org_membership):
         """Transactions ordered by newest first."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('10.00')
         organisation.save()
         grant_credits(organisation, Decimal('1.00'), 'First')

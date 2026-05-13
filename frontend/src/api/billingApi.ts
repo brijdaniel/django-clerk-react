@@ -1,5 +1,5 @@
 import { queryOptions, infiniteQueryOptions } from '@tanstack/react-query'
-import type { BillingSummaryResponse, InvoiceListResponse, InvoicePreviewResponse } from '../types/billing.types'
+import type { BillingSummaryResponse, BuyCreditsResponse, InvoiceListResponse, InvoicePreviewResponse } from '../types/billing.types'
 import type { ApiClient } from '../lib/helper'
 
 export function getBillingSummaryQueryOptions(client: ApiClient, page = 1, pageSize = 50) {
@@ -69,6 +69,10 @@ export async function downloadInvoices(
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+export async function buyCredits(client: ApiClient, amount: number): Promise<BuyCreditsResponse> {
+  return client.post<BuyCreditsResponse>('/api/billing/buy-credits/', { amount })
 }
 
 export function getBillingTransactionsInfiniteOptions(client: ApiClient, pageSize: number = 50) {

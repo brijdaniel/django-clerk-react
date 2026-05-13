@@ -233,7 +233,7 @@ test.describe('Billing gate — error surfaces in UI', () => {
   // These tests mutate shared org state (balance, config) — must not run in parallel
   test.describe.configure({ mode: 'serial' })
 
-  test('insufficient trial balance shows balance error message', async ({ page }) => {
+  test('insufficient prepaid balance shows balance error message', async ({ page }) => {
     await setOrgBalance(page, 0)
     try {
       await page.goto('/app/send')

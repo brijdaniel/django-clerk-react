@@ -578,8 +578,8 @@ class TestGroupScheduleBilling:
     def test_create_blocked_when_insufficient_credits(
         self, authenticated_client, organisation, user
     ):
-        """Trial org with insufficient credits gets 402."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org with insufficient credits gets 402."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.credit_balance = Decimal('0.00')
         organisation.save()
 
@@ -595,8 +595,8 @@ class TestGroupScheduleBilling:
     def test_create_reserves_credits_for_trial_org(
         self, authenticated_client, organisation, user
     ):
-        """Trial org: credit_balance decreases by members × message_parts × rate."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org: credit_balance decreases by members × message_parts × rate."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 
@@ -636,8 +636,8 @@ class TestGroupScheduleBilling:
     def test_destroy_refunds_credits_for_trial_org(
         self, authenticated_client, organisation, user
     ):
-        """Trial org: cancelling a PENDING group schedule restores the reserved credits."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org: cancelling a PENDING group schedule restores the reserved credits."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 

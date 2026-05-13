@@ -64,6 +64,15 @@ class CustomerResult:
     error: str | None = None
 
 
+@dataclass
+class CheckoutResult:
+    """Result of creating a checkout session for credit purchase."""
+    success: bool
+    session_id: str | None = None
+    checkout_url: str | None = None
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # ABC
 # ---------------------------------------------------------------------------
@@ -128,6 +137,17 @@ class MeteredBillingProvider(ABC):
         Concrete implementations handle fetching from whatever backing store
         the provider uses (e.g. Stripe hosted PDF, Azure blob, etc.).
         """
+
+    @abstractmethod
+    def create_checkout_session(
+        self,
+        customer_id: str | None,
+        amount: Decimal,
+        org_id: str,
+        success_url: str,
+        cancel_url: str,
+    ) -> CheckoutResult:
+        """Create a checkout session for a one-time credit purchase."""
 
     def parse_webhook(self, payload: bytes, signature: str) -> dict:
         """Parse and verify a webhook payload. Override per provider."""
@@ -204,6 +224,26 @@ class MockMeteredBillingProvider(MeteredBillingProvider):
             success=True,
             content=pdf_content,
             filename=f'invoice-{invoice_id}.pdf',
+        )
+
+    def create_checkout_session(
+        self,
+        customer_id: str | None,
+        amount: Decimal,
+        org_id: str,
+        success_url: str,
+        cancel_url: str,
+    ) -> CheckoutResult:
+        MockMeteredBillingProvider._counter += 1
+        session_id = f'mock_cs_{MockMeteredBillingProvider._counter}'
+        logger.info(
+            'MockMeteredBillingProvider.create_checkout_session(customer=%s, amount=$%s, org=%s)',
+            customer_id, amount, org_id,
+        )
+        return CheckoutResult(
+            success=True,
+            session_id=session_id,
+            checkout_url=f'https://mock-checkout.example.com/sessions/{session_id}',
         )
 
 

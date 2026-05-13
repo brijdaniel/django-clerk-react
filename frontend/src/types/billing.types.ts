@@ -1,4 +1,4 @@
-export type BillingMode = 'trial' | 'subscribed' | 'past_due'
+export type BillingMode = 'prepaid' | 'subscribed' | 'past_due'
 export type TransactionType = 'grant' | 'deduct' | 'usage' | 'refund'
 
 export type CreditTransaction = {
@@ -63,6 +63,10 @@ export type InvoicePreviewResponse = {
   period_start: string
   period_end: string
   line_items: InvoicePreviewLineItem[]
+}
+
+export type BuyCreditsResponse = {
+  checkout_url: string
 }
 
 export type BillingSummaryResponse = {

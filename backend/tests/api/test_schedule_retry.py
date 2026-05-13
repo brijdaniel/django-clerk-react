@@ -6,7 +6,7 @@ Tests:
 - Retry rejects non-failed schedules
 - Retry checks billing before allowing retry
 - Retry handles batch parents (only re-queues failed children)
-- Trial orgs get re-charged on retry
+- Prepaid orgs get re-charged on retry
 """
 
 from decimal import Decimal
@@ -173,7 +173,7 @@ class TestScheduleRetry:
         self, authenticated_client, organisation, user, mock_send_message_task
     ):
         """Retrying on a trial org re-charges credits (since refund ran on failure)."""
-        organisation.billing_mode = organisation.BILLING_TRIAL
+        organisation.billing_mode = organisation.BILLING_PREPAID
         grant_credits(organisation, Decimal('10.00'), description='Test credits')
         organisation.save()
 

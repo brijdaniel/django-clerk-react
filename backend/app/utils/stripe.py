@@ -15,9 +15,14 @@ from django.conf import settings
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils import timezone
+from django.db import transaction as db_transaction
 
-from app.models import Invoice, Organisation
+
+from app.models import CreditPurchase, Invoice, Organisation, CreditTransaction
+from app.utils.billing import grant_credits
 from app.utils.metered_billing import (
+    CheckoutResult,
     CustomerResult,
     InvoiceLineItem,
     InvoiceResult,
@@ -177,6 +182,54 @@ class StripeMeteredBillingProvider(MeteredBillingProvider):
             )
             return PdfResult(success=False, error=str(e))
 
+    def create_checkout_session(
+        self,
+        customer_id: str | None,
+        amount: Decimal,
+        org_id: str,
+        success_url: str,
+        cancel_url: str,
+    ) -> CheckoutResult:
+        """Create a Stripe Checkout Session for a one-time credit purchase."""
+        try:
+            params: dict = {
+                'mode': 'payment',
+                'currency': 'aud',
+                'line_items': [{
+                    'price_data': {
+                        'currency': 'aud',
+                        'unit_amount': int(amount * 100),
+                        'product_data': {
+                            'name': f'${amount:.0f} Credit Top-Up',
+                        },
+                    },
+                    'quantity': 1,
+                }],
+                'success_url': success_url,
+                'cancel_url': cancel_url,
+                'metadata': {
+                    'purchase_type': 'credit_purchase',
+                    'org_id': org_id,
+                },
+            }
+            if customer_id:
+                params['customer'] = customer_id
+            else:
+                params['customer_creation'] = 'always'
+
+            session = stripe.checkout.Session.create(**params)
+            return CheckoutResult(
+                success=True,
+                session_id=session.id,
+                checkout_url=session.url,
+            )
+        except stripe.StripeError as e:
+            logger.error(
+                'Failed to create checkout session for org %s: %s',
+                org_id, str(e), exc_info=True,
+            )
+            return CheckoutResult(success=False, error=str(e))
+
     def parse_webhook(self, payload: bytes, signature: str) -> dict:
         """Parse and verify a Stripe webhook payload."""
         event = stripe.Webhook.construct_event(
@@ -194,13 +247,15 @@ class StripeMeteredBillingProvider(MeteredBillingProvider):
 # ---------------------------------------------------------------------------
 
 class StripeWebhookView(APIView):
-    """Handle Stripe webhook events for invoice status updates.
+    """Handle Stripe webhook events for invoice and checkout session updates.
 
     Events handled:
       - invoice.paid → Invoice.status = 'paid'; restore org to subscribed if no other unpaid invoices
       - invoice.payment_failed → Invoice.status = 'uncollectable'; Organisation.billing_mode = 'past_due'
       - invoice.overdue → same as payment_failed (blocks sends before Stripe exhausts charge retries)
       - invoice.voided → Invoice.status = 'void'
+      - checkout.session.completed → grant purchased credits to org
+      - checkout.session.expired → mark CreditPurchase as expired
     """
     authentication_classes = []
     permission_classes = []
@@ -226,6 +281,10 @@ class StripeWebhookView(APIView):
             self._handle_invoice_payment_failed(invoice_id)
         elif event_type == 'invoice.voided':
             self._handle_invoice_voided(invoice_id)
+        elif event_type == 'checkout.session.completed':
+            self._handle_checkout_completed(invoice_data)
+        elif event_type == 'checkout.session.expired':
+            self._handle_checkout_expired(invoice_data)
         else:
             logger.debug('Ignoring Stripe event: %s', event_type)
 
@@ -291,3 +350,77 @@ class StripeWebhookView(APIView):
         ).update(status=Invoice.STATUS_VOID)
         if not updated:
             logger.warning('invoice.voided: no matching invoice for %s', invoice_id)
+
+    def _handle_checkout_completed(self, session_data: dict) -> None:
+        """Grant purchased credits when a Stripe Checkout Session is completed."""
+        session_id = session_data.get('id', '')
+        metadata = session_data.get('metadata', {})
+
+        if metadata.get('purchase_type') != 'credit_purchase':
+            logger.debug('checkout.session.completed: not a credit purchase, ignoring')
+            return
+
+        payment_status = session_data.get('payment_status', '')
+        if payment_status != 'paid':
+            logger.info('checkout.session.completed: payment_status=%s, skipping', payment_status)
+            return
+
+        with db_transaction.atomic():
+            try:
+                purchase = CreditPurchase.objects.select_for_update().get(
+                    stripe_checkout_session_id=session_id,
+                )
+            except CreditPurchase.DoesNotExist:
+                logger.warning('checkout.session.completed: no CreditPurchase for session %s', session_id)
+                return
+
+            if purchase.status == CreditPurchase.STATUS_COMPLETED:
+                logger.debug('checkout.session.completed: purchase %s already completed', session_id)
+                return
+
+            org = purchase.organisation
+            new_balance = grant_credits(
+                org, purchase.amount, f'Credit purchase: ${purchase.amount}',
+            )
+
+            purchase.status = CreditPurchase.STATUS_COMPLETED
+            purchase.completed_at = timezone.now()
+            
+            # Link the grant transaction (the most recent GRANT for this org)
+            grant_tx = CreditTransaction.objects.filter(
+                organisation=org,
+                transaction_type=CreditTransaction.GRANT,
+                balance_after=new_balance,
+            ).order_by('-created_at').first()
+            purchase.credit_transaction = grant_tx
+            purchase.save()
+
+            # Link Stripe customer if org doesn't have one yet
+            customer_id = session_data.get('customer')
+            if customer_id and not org.billing_customer_id:
+                org.billing_customer_id = customer_id
+                org.save(update_fields=['billing_customer_id'])
+                logger.info('Linked Stripe customer %s to org %s from checkout', customer_id, org.clerk_org_id)
+
+        logger.info(
+            'Credit purchase completed: $%s for org %s (session %s)',
+            purchase.amount, org.clerk_org_id, session_id,
+        )
+
+    def _handle_checkout_expired(self, session_data: dict) -> None:
+        """Mark CreditPurchase as expired when the checkout session expires."""
+        session_id = session_data.get('id', '')
+        metadata = session_data.get('metadata', {})
+
+        if metadata.get('purchase_type') != 'credit_purchase':
+            return
+
+        updated = CreditPurchase.objects.filter(
+            stripe_checkout_session_id=session_id,
+            status=CreditPurchase.STATUS_PENDING,
+        ).update(status=CreditPurchase.STATUS_EXPIRED)
+
+        if updated:
+            logger.info('Credit purchase expired: session %s', session_id)
+        else:
+            logger.debug('checkout.session.expired: no pending CreditPurchase for session %s', session_id)

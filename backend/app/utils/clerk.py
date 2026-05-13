@@ -200,15 +200,15 @@ def _handle_subscription_active(data):
 
 
 def _handle_subscription_canceled(data):
-    """Revert org to trial mode when a Clerk Billing subscription is cancelled or ended."""
+    """Revert org to prepaid mode when a Clerk Billing subscription is cancelled or ended."""
     org_id = _extract_billing_org_id(data, 'subscription.canceled')
     if not org_id:
         return
     updated = Organisation.objects.filter(clerk_org_id=org_id).update(
-        billing_mode=Organisation.BILLING_TRIAL
+        billing_mode=Organisation.BILLING_PREPAID
     )
     if updated:
-        logger.info('Org %s reverted to trial billing mode (subscription cancelled)', org_id)
+        logger.info('Org %s reverted to prepaid billing mode (subscription cancelled)', org_id)
     else:
         logger.warning('subscription.canceled: org %s not found', org_id)
 

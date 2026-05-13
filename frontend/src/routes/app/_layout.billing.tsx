@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useOrganization, PricingTable } from '@clerk/clerk-react'
 import { useSubscription, SubscriptionDetailsButton } from '@clerk/clerk-react/experimental'
 import { dark } from '@clerk/themes'
-import { Suspense, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { usePrefersDark } from '../../hooks/usePrefersDark'
 import { Badge } from '../../ui/badge'
 import { Button } from '../../ui/button'
@@ -23,6 +23,7 @@ import type { TransactionType } from '../../types/billing.types'
 import RouteErrorComponent from '../../components/shared/RouteErrorComponent'
 import { useInfiniteScroll } from '../../hooks/useInfiniteScroll'
 import { InvoicesModal } from '../../components/billing/InvoicesModal'
+import { BuyCreditsDialog } from '../../components/billing/BuyCreditsDialog'
 
 export const Route = createFileRoute('/app/_layout/billing')({
   component: RouteComponent,
@@ -76,7 +77,19 @@ function BillingContent() {
       }
   const [planDialogOpen, setPlanDialogOpen] = useState(false)
   const [invoicesOpen, setInvoicesOpen] = useState(false)
+  const [buyCreditsOpen, setBuyCreditsOpen] = useState(false)
+  const [purchaseSuccess, setPurchaseSuccess] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const queryClient = useQueryClient()
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('purchase') === 'success') {
+      setPurchaseSuccess(true)
+      queryClient.invalidateQueries({ queryKey: ['billing'] })
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   const billingQuery = useInfiniteQuery(getBillingTransactionsInfiniteOptions(client, 50))
 
@@ -124,6 +137,14 @@ function BillingContent() {
       <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg border dark:border-white/10 p-6">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-white mb-4">Billing</h2>
 
+        {purchaseSuccess && (
+          <div className="mb-4 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+            <p className="text-sm text-green-700 dark:text-green-400 font-medium">
+              Credit purchase successful! Your balance has been updated.
+            </p>
+          </div>
+        )}
+
         {isPastDue && (
           <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
             <p className="text-sm text-red-700 dark:text-red-400 font-medium">
@@ -137,7 +158,7 @@ function BillingContent() {
           {/* Balance / Plan card */}
           <div className="p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg">
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              {isSubscribed || isPastDue ? 'Plan' : 'Trial balance'}
+              {isSubscribed || isPastDue ? 'Plan' : 'Prepaid balance'}
             </p>
             <p className="text-2xl font-bold mt-1 text-zinc-900 dark:text-white">
               {!isSubscribed && !isPastDue ? (
@@ -150,7 +171,7 @@ function BillingContent() {
             </p>
             {!isSubscribed && !isPastDue && balance <= 0 && (
               <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                Balance exhausted. Subscribe to continue sending.
+                Balance exhausted. Purchase more credits to continue sending.
               </p>
             )}
           </div>
@@ -184,9 +205,14 @@ function BillingContent() {
                   </SubscriptionDetailsButton>
                 </>
               ) : (
-                <Button color="purple" className="w-full" onClick={() => setPlanDialogOpen(true)}>
-                  Subscribe
-                </Button>
+                <>
+                  <Button color="purple" className="flex-1" onClick={() => setBuyCreditsOpen(true)}>
+                    Buy Credits
+                  </Button>
+                  <Button outline className="flex-1" onClick={() => setPlanDialogOpen(true)}>
+                    Subscribe
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -267,6 +293,7 @@ function BillingContent() {
       </div>
 
       <InvoicesModal open={invoicesOpen} onClose={() => setInvoicesOpen(false)} billingMode={data.billing_mode} />
+      <BuyCreditsDialog open={buyCreditsOpen} onClose={() => setBuyCreditsOpen(false)} />
 
       <Dialog open={planDialogOpen} onClose={() => setPlanDialogOpen(false)} size="2xl">
         <DialogTitle>Manage Plan</DialogTitle>

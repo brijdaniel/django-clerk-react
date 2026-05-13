@@ -63,8 +63,8 @@ class TestSendSMSPipeline:
     def test_direct_send_trial_credits_consumed(
         self, authenticated_client, organisation, mock_sms_provider
     ):
-        """Trial org: view reserves credits, task sends, final balance is reduced."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org: view reserves credits, task sends, final balance is reduced."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 
@@ -127,7 +127,7 @@ class TestSendSMSPipeline:
         self, authenticated_client, organisation, mock_sms_provider_permanent_fail
     ):
         """Permanent provider failure → schedule FAILED, trial credits are refunded."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 
@@ -193,14 +193,14 @@ class TestGroupSendPipeline:
         self, authenticated_client, organisation, user, mock_sms_provider
     ):
         """
-        Trial org: credits reserved at create time, no second deduction when task sends.
+        Prepaid org: credits reserved at create time, no second deduction when task sends.
 
         view.create() calls record_usage() per child.
         send_message task skips record_usage() for trial orgs (already reserved).
         """
         from app.celery import dispatch_due_messages
 
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'Test grant')
 
@@ -209,7 +209,7 @@ class TestGroupSendPipeline:
         future_time = timezone.now() + timezone.timedelta(hours=1)
 
         response = authenticated_client.post('/api/group-schedules/', {
-            'name': 'Trial pipeline test',
+            'name': 'Prepaid pipeline test',
             'group_id': group.id,
             'text': 'Hi',
             'scheduled_time': future_time.isoformat(),

@@ -130,17 +130,17 @@ describe('BillingLayout', () => {
     expect(screen.getByText('Loading billing...')).toBeInTheDocument()
   })
 
-  it('renders trial billing mode', async () => {
+  it('renders prepaid billing mode', async () => {
     server.use(
       http.get('http://localhost:8000/api/billing/summary/', () =>
-        HttpResponse.json(createBillingSummary({ billing_mode: 'trial', balance: '8.50' }))
+        HttpResponse.json(createBillingSummary({ billing_mode: 'prepaid', balance: '8.50' }))
       )
     )
 
     renderWithProviders(<BillingWithSuspense />)
 
     await waitFor(() => {
-      expect(screen.getByTestId('billing-mode')).toHaveTextContent('trial')
+      expect(screen.getByTestId('billing-mode')).toHaveTextContent('prepaid')
     })
     expect(screen.getByTestId('balance')).toHaveTextContent('8.50')
   })
@@ -292,11 +292,11 @@ describe('past_due billing mode', () => {
     await screen.findByText(/All message sending is currently blocked/i)
   })
 
-  it('does not show trial balance when past due', async () => {
+  it('does not show prepaid balance when past due', async () => {
     const RouteComp = capturedBillingRouteOptions.component as React.ComponentType
     renderWithProviders(<RouteComp />)
     await screen.findAllByText('Past Due')
-    expect(screen.queryByText(/Trial balance/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prepaid balance/i)).not.toBeInTheDocument()
   })
 })
 
@@ -310,7 +310,7 @@ describe('Manage Plan dialog', () => {
     mockUseSubscription.mockReturnValue({ data: null, isLoading: false })
   })
 
-  it('shows Subscribe button for org on free trial', async () => {
+  it('shows Subscribe button for prepaid org', async () => {
     mockUseSubscription.mockReturnValue({
       data: { status: 'active', subscriptionItems: [{ status: 'active', plan: { name: 'Free', fee: { amount: 0 } } }] },
       isLoading: false,

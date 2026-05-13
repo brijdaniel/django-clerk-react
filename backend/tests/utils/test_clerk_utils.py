@@ -377,7 +377,7 @@ class TestHandleSubscriptionActive:
         """Org billing_mode is set to 'subscribed' when subscription becomes active."""
         org = OrganisationFactory(
             clerk_org_id='org_sub_123',
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
 
         handle_billing_subscription_created({'payer': {'organization_id': 'org_sub_123'}})
@@ -389,7 +389,7 @@ class TestHandleSubscriptionActive:
         """Handles payload with payer.organization_id (real Clerk format)."""
         org = OrganisationFactory(
             clerk_org_id='org_sub_nested',
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
 
         handle_billing_subscription_created({'payer': {'organization_id': 'org_sub_nested'}})
@@ -411,7 +411,7 @@ class TestHandleSubscriptionCanceled:
     """Tests for subscription canceled/ended webhook handler."""
 
     def test_reverts_org_to_trial(self):
-        """Org billing_mode is reverted to 'trial' when subscription cancelled."""
+        """Org billing_mode is reverted to 'prepaid' when subscription cancelled."""
         org = OrganisationFactory(
             clerk_org_id='org_cancel_123',
             billing_mode=Organisation.BILLING_SUBSCRIBED,
@@ -420,7 +420,7 @@ class TestHandleSubscriptionCanceled:
         handle_billing_subscription_deleted({'payer': {'organization_id': 'org_cancel_123'}})
 
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     def test_credit_balance_unchanged_on_cancellation(self):
         """Cancelling subscription does not touch credit_balance."""
@@ -491,7 +491,7 @@ class TestHandleSubscriptionUpdated:
 
     def test_routes_active_status_with_paid_plan(self):
         """subscription.updated with status=active and a paid plan sets subscribed."""
-        org = OrganisationFactory(clerk_org_id='org_updated_active', billing_mode=Organisation.BILLING_TRIAL)
+        org = OrganisationFactory(clerk_org_id='org_updated_active', billing_mode=Organisation.BILLING_PREPAID)
         handle_billing_subscription_updated({
             'payer': {'organization_id': 'org_updated_active'},
             'status': 'active',
@@ -509,7 +509,7 @@ class TestHandleSubscriptionUpdated:
             'items': [{'status': 'upcoming', 'plan': {'amount': 0, 'name': 'Free'}}],
         })
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     def test_active_status_with_no_items_reverts_to_trial(self):
         """subscription.updated with status=active but empty items reverts to trial."""
@@ -520,7 +520,7 @@ class TestHandleSubscriptionUpdated:
             'items': [],
         })
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     def test_routes_past_due_status(self):
         """subscription.updated with status=past_due calls _handle_subscription_past_due."""
@@ -535,14 +535,14 @@ class TestHandleSubscriptionUpdated:
         org = OrganisationFactory(clerk_org_id='org_updated_cancel', billing_mode=Organisation.BILLING_SUBSCRIBED)
         handle_billing_subscription_updated({'payer': {'organization_id': 'org_updated_cancel'}, 'status': 'canceled'})
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
     def test_noop_for_unknown_status(self):
         """subscription.updated with unknown status is a no-op."""
-        org = OrganisationFactory(clerk_org_id='org_updated_unknown', billing_mode=Organisation.BILLING_TRIAL)
+        org = OrganisationFactory(clerk_org_id='org_updated_unknown', billing_mode=Organisation.BILLING_PREPAID)
         handle_billing_subscription_updated({'payer': {'organization_id': 'org_updated_unknown'}, 'status': 'incomplete'})
         org.refresh_from_db()
-        assert org.billing_mode == Organisation.BILLING_TRIAL
+        assert org.billing_mode == Organisation.BILLING_PREPAID
 
 
 @pytest.mark.django_db

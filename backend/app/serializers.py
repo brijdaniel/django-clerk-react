@@ -336,3 +336,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'invoice_url', 'period_start', 'period_end', 'created_at',
         ]
         read_only_fields = fields
+
+
+class BuyCreditSerializer(serializers.Serializer):
+    amount = serializers.IntegerField(min_value=5, max_value=10000)

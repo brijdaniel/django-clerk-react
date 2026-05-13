@@ -155,7 +155,7 @@ export function createCreditTransaction(overrides: Partial<CreditTransaction> = 
 
 export function createBillingSummary(overrides: Partial<BillingSummaryResponse> = {}): BillingSummaryResponse {
   return {
-    billing_mode: 'trial',
+    billing_mode: 'prepaid',
     balance: '8.50',
     monthly_limit: '50.00',
     total_monthly_spend: '1.50',

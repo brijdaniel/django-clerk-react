@@ -9,7 +9,7 @@
  *   5. Trigger invoice generation
  *   6. Verify invoice appears on billing page
  *   7. Cancel subscription
- *   8. Verify org reverts to trial
+ *   8. Verify org reverts to prepaid
  *
  * Requirements:
  *   - CLERK_SECRET_KEY (Clerk auth)
@@ -49,7 +49,7 @@ test.describe('Stripe Billing Integration', () => {
     await authenticatePage(page)
   })
 
-  // Ensure the org is back in trial mode after all tests (so billing.spec.ts still works)
+  // Ensure the org is back in prepaid mode after all tests (so billing.spec.ts still works)
   test.afterAll(async ({ browser }) => {
     if (!process.env.CLERK_SECRET_KEY) return
     const orgId = getOrgId()
@@ -61,10 +61,10 @@ test.describe('Stripe Billing Integration', () => {
     await page.goto('/app/billing')
     await expect(page.getByText('Billing').first()).toBeVisible({ timeout: 5000 })
 
-    // Verify we start in trial mode
+    // Verify we start in prepaid mode
     await expect(page.getByText('Trial balance').first()).toBeVisible()
 
-    // Open the Manage Plan dialog (button says "Subscribe" in trial mode)
+    // Open the Manage Plan dialog (button says "Subscribe" in prepaid mode)
     await page.getByRole('button', { name: /Subscribe/i }).first().click()
     await expect(page.getByText('Manage Plan').first()).toBeVisible({ timeout: 5000 })
 
@@ -268,10 +268,10 @@ test.describe('Stripe Billing Integration', () => {
     const orgId = getOrgId()
     await simulateSubscriptionCanceled(orgId)
 
-    // Verify billing_mode reverted to trial
+    // Verify billing_mode reverted to prepaid
     await expect(async () => {
       const summary = await getBillingSummary(page)
-      expect(summary.billing_mode).toBe('trial')
+      expect(summary.billing_mode).toBe('prepaid')
     }).toPass({ timeout: 10000, intervals: [1000] })
 
     // Verify the billing page reflects the change

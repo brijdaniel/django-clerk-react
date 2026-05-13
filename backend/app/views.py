@@ -500,7 +500,7 @@ class ScheduleViewSet(TenantScopedMixin, viewsets.ModelViewSet):
             if is_batch_parent:
                 failed_children.update(**reset_fields)
 
-            if org.billing_mode == org.BILLING_TRIAL:
+            if org.billing_mode == org.BILLING_PREPAID:
                 for s in (list(failed_children) if is_batch_parent else [schedule]):
                     record_usage(
                         org, s.message_parts, format=s.format or 'sms',
@@ -635,9 +635,9 @@ class GroupScheduleViewSet(TenantScopedMixin, viewsets.GenericViewSet):
                 for member in members
             ])
 
-            # Trial: reserve credits per child now so subsequent requests see the updated balance.
+            # Prepaid: reserve credits per child now so subsequent requests see the updated balance.
             # Subscribed: record_usage is called by the Celery task on successful send.
-            if org.billing_mode == org.BILLING_TRIAL:
+            if org.billing_mode == org.BILLING_PREPAID:
                 for child in children:
                     record_usage(
                         org,
@@ -880,7 +880,7 @@ class SMSViewSet(viewsets.ViewSet):
                 alphanumeric_sender=alphanumeric_sender,
                 created_by=request.user, updated_by=request.user,
             )
-            if org.billing_mode == org.BILLING_TRIAL:
+            if org.billing_mode == org.BILLING_PREPAID:
                 record_usage(
                     org, message_parts, format=format_type,
                     description=f"{format_type.upper()} to {recipient['phone']}",
@@ -925,7 +925,7 @@ class SMSViewSet(viewsets.ViewSet):
                     alphanumeric_sender=alphanumeric_sender,
                     created_by=request.user, updated_by=request.user,
                 )
-                if org.billing_mode == org.BILLING_TRIAL:
+                if org.billing_mode == org.BILLING_PREPAID:
                     desc = description_prefix or f"{format_type.upper()} to {m['phone']}"
                     record_usage(
                         org, message_parts, format=format_type,
@@ -1166,6 +1166,45 @@ class BillingViewSet(TenantScopedMixin, viewsets.GenericViewSet):
             'latest_invoice': latest_invoice,
         })
         return response
+
+    @action(detail=False, methods=['post'], url_path='buy-credits')
+    def buy_credits(self, request):
+        """POST /api/billing/buy-credits/ — create a Stripe Checkout Session for credit purchase."""
+        org = request.org
+
+        if org.billing_mode == Organisation.BILLING_PAST_DUE:
+            return Response(
+                {'detail': 'Cannot purchase credits while subscription payment is past due.'},
+                status=status.HTTP_402_PAYMENT_REQUIRED,
+            )
+
+        serializer = BuyCreditSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        amount = Decimal(serializer.validated_data['amount'])
+
+        provider = get_billing_provider()
+        base_url = request.build_absolute_uri('/app/billing')
+        result = provider.create_checkout_session(
+            customer_id=org.billing_customer_id,
+            amount=amount,
+            org_id=org.clerk_org_id,
+            success_url=f'{base_url}?purchase=success',
+            cancel_url=f'{base_url}?purchase=cancelled',
+        )
+
+        if not result.success:
+            return Response(
+                {'detail': f'Failed to create checkout session: {result.error}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        CreditPurchase.objects.create(
+            organisation=org,
+            stripe_checkout_session_id=result.session_id,
+            amount=amount,
+        )
+
+        return Response({'checkout_url': result.checkout_url})
 
     @action(detail=False, methods=['patch'], url_path='test-set-balance')
     def test_set_balance(self, request):

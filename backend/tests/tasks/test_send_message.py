@@ -81,7 +81,7 @@ class TestSendMessageSuccess:
     def test_success_does_not_double_deduct_trial_org(
         self, db, organisation, contact, user, mock_sms_provider
     ):
-        """Trial credits reserved at dispatch time; task must NOT deduct again."""
+        """Prepaid credits reserved at dispatch time; task must NOT deduct again."""
         grant_credits(organisation, Decimal('10.00'), 'test grant')
         schedule = _make_queued(db, organisation, user, contact)
 

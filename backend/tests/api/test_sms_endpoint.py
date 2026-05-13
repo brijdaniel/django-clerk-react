@@ -493,18 +493,18 @@ class TestUploadFile:
 
 
 # ---------------------------------------------------------------------------
-# Trial credit reservation at dispatch time
+# Prepaid credit reservation at dispatch time
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-class TestTrialCreditReservation:
+class TestPrepaidCreditReservation:
     """Credits are reserved in the HTTP request for trial orgs, not in the Celery task."""
 
     def test_send_sms_trial_reserves_credits(
         self, authenticated_client, organisation, mock_send_message_task
     ):
-        """Trial org balance decreases at 202 time (before Celery task runs)."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org balance decreases at 202 time (before Celery task runs)."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('1.00'), 'test grant')
         balance_before = get_balance(organisation)
@@ -537,8 +537,8 @@ class TestTrialCreditReservation:
     def test_send_mms_trial_reserves_credits(
         self, authenticated_client, organisation, mock_send_message_task
     ):
-        """Trial org MMS send deducts MMS rate immediately."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        """Prepaid org MMS send deducts MMS rate immediately."""
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('1.00'), 'test grant')
         balance_before = get_balance(organisation)
@@ -556,7 +556,7 @@ class TestTrialCreditReservation:
         self, authenticated_client, organisation, user, mock_send_message_task
     ):
         """Group send deducts 1 SMS rate per eligible member at dispatch time."""
-        organisation.billing_mode = Organisation.BILLING_TRIAL
+        organisation.billing_mode = Organisation.BILLING_PREPAID
         organisation.save()
         grant_credits(organisation, Decimal('10.00'), 'test grant')
         balance_before = get_balance(organisation)

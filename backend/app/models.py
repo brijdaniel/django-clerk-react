@@ -25,11 +25,11 @@ class User(AbstractUser):
 
 
 class Organisation(models.Model):
-    BILLING_TRIAL = 'trial'
+    BILLING_PREPAID = 'prepaid'
     BILLING_SUBSCRIBED = 'subscribed'
     BILLING_PAST_DUE = 'past_due'
     BILLING_MODE_CHOICES = [
-        (BILLING_TRIAL, 'Trial'),
+        (BILLING_PREPAID, 'Prepaid'),
         (BILLING_SUBSCRIBED, 'Subscribed'),
         (BILLING_PAST_DUE, 'Past Due'),
     ]
@@ -41,7 +41,7 @@ class Organisation(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
     credit_balance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
-    billing_mode = models.CharField(max_length=20, choices=BILLING_MODE_CHOICES, default=BILLING_TRIAL)
+    billing_mode = models.CharField(max_length=20, choices=BILLING_MODE_CHOICES, default=BILLING_PREPAID)
     billing_customer_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
 
     class Meta:
@@ -293,3 +293,30 @@ class Invoice(TenantModel, AuditMixin):
 
     def __str__(self):
         return f'Invoice {self.provider_invoice_id} ({self.status}) for {self.organisation}'
+
+
+class CreditPurchase(TenantModel, AuditMixin):
+    STATUS_PENDING = 'pending'
+    STATUS_COMPLETED = 'completed'
+    STATUS_EXPIRED = 'expired'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_EXPIRED, 'Expired'),
+    ]
+
+    stripe_checkout_session_id = models.CharField(max_length=255, unique=True, db_index=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    credit_transaction = models.ForeignKey(
+        CreditTransaction, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='credit_purchase',
+    )
+
+    class Meta:
+        db_table = 'credit_purchases'
+        indexes = [models.Index(fields=['organisation', '-created_at'])]
+
+    def __str__(self):
+        return f'CreditPurchase ${self.amount} ({self.status}) for {self.organisation}'

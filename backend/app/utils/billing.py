@@ -2,7 +2,8 @@
 Billing utilities for the credit/usage system.
 
 Two billing modes:
-  - 'trial':      org has a dollar balance; sends are blocked when balance is exhausted.
+  - 'prepaid':    org has a dollar balance; sends are blocked when balance is exhausted.
+                  Orgs start with free credits (trial period) and can purchase more via Stripe.
   - 'subscribed': org has an active Clerk Billing subscription; sends are never balance-gated,
                   but usage is tracked per-format for end-of-month metered billing.
 
@@ -159,9 +160,9 @@ def check_can_send(org, units: int, format: str) -> tuple:
             f'(${info["current"]:.2f} of ${info["limit"]:.2f})'
         )
 
-    if org.billing_mode == org.BILLING_TRIAL:
+    if org.billing_mode == org.BILLING_PREPAID:
         if get_balance(org) < cost:
-            return False, 'Insufficient balance. Subscribe to continue sending.'
+            return False, 'Insufficient balance. Purchase more credits to continue sending.'
 
     return True, None
 
@@ -178,7 +179,7 @@ def record_usage(org, units: int, format: str, description: str, user=None, sche
     rate = get_rate(format, org)
     cost = Decimal(units) * rate
 
-    if org.billing_mode == org.BILLING_TRIAL:
+    if org.billing_mode == org.BILLING_PREPAID:
         with db_transaction.atomic():
             locked_org = org.__class__.objects.select_for_update().get(pk=org.pk)
             new_balance = locked_org.credit_balance - cost
@@ -253,7 +254,7 @@ def refund_usage(org, schedule) -> None:
     failure_category = getattr(schedule, 'failure_category', None) or 'unknown'
     description = f'Refund: send failed ({failure_category})'
 
-    if org.billing_mode == org.BILLING_TRIAL:
+    if org.billing_mode == org.BILLING_PREPAID:
         with db_transaction.atomic():
             org.__class__.objects.filter(pk=org.pk).update(
                 credit_balance=F('credit_balance') + amount

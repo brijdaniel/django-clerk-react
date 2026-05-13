@@ -67,7 +67,7 @@ class TestCheckCanSend:
     def test_trial_allows_when_sufficient_balance(self):
         org = OrganisationFactory(
             credit_balance=Decimal('1.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         allowed, error = check_can_send(org, units=1, format='sms')
         assert allowed is True
@@ -76,7 +76,7 @@ class TestCheckCanSend:
     def test_trial_blocks_when_insufficient_balance(self):
         org = OrganisationFactory(
             credit_balance=Decimal('0.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         allowed, error = check_can_send(org, units=1, format='sms')
         assert allowed is False
@@ -92,7 +92,7 @@ class TestCheckCanSend:
         assert error is None
 
     def test_monthly_limit_blocks_both_modes(self):
-        for mode in [Organisation.BILLING_TRIAL, Organisation.BILLING_SUBSCRIBED]:
+        for mode in [Organisation.BILLING_PREPAID, Organisation.BILLING_SUBSCRIBED]:
             org = OrganisationFactory(
                 credit_balance=Decimal('100.00'),
                 billing_mode=mode,
@@ -105,7 +105,7 @@ class TestCheckCanSend:
     def test_allows_when_under_monthly_limit(self):
         org = OrganisationFactory(
             credit_balance=Decimal('100.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         ConfigFactory(organisation=org, name='monthly_limit', value='100.00')
         allowed, error = check_can_send(org, units=1, format='sms')
@@ -116,7 +116,7 @@ class TestCheckCanSend:
         cost_of_10 = 10 * settings.SMS_RATE
         org = OrganisationFactory(
             credit_balance=cost_of_10 - Decimal('0.01'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         allowed, error = check_can_send(org, units=10, format='sms')
         assert allowed is False
@@ -131,7 +131,7 @@ class TestCheckCanSend:
 
     def test_monthly_limit_zero_blocks_all_sends(self):
         """monthly_limit=0.00 blocks every send regardless of balance or mode."""
-        for mode in [Organisation.BILLING_TRIAL, Organisation.BILLING_SUBSCRIBED]:
+        for mode in [Organisation.BILLING_PREPAID, Organisation.BILLING_SUBSCRIBED]:
             org = OrganisationFactory(
                 credit_balance=Decimal('100.00'),
                 billing_mode=mode,
@@ -147,7 +147,7 @@ class TestRecordUsage:
     def test_trial_deducts_balance(self):
         org = OrganisationFactory(
             credit_balance=Decimal('1.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='sms', description='Test SMS')
         assert get_balance(org) == Decimal('1.00') - settings.SMS_RATE
@@ -156,7 +156,7 @@ class TestRecordUsage:
         from app.models import CreditTransaction
         org = OrganisationFactory(
             credit_balance=Decimal('1.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='sms', description='Test SMS')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
@@ -187,7 +187,7 @@ class TestRecordUsage:
         user = UserFactory()
         org = OrganisationFactory(
             credit_balance=Decimal('1.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='sms', description='Test', user=user)
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
@@ -196,7 +196,7 @@ class TestRecordUsage:
     def test_mms_rate_applied(self):
         org = OrganisationFactory(
             credit_balance=Decimal('1.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='mms', description='Test MMS')
         assert get_balance(org) == Decimal('1.00') - settings.MMS_RATE
@@ -207,7 +207,7 @@ class TestGetMonthlyUsage:
     def test_sums_deduct_and_usage(self):
         org = OrganisationFactory(
             credit_balance=Decimal('10.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 2, format='sms', description='Send 1')
         record_usage(org, 1, format='sms', description='Send 2')
@@ -217,7 +217,7 @@ class TestGetMonthlyUsage:
     def test_excludes_other_formats(self):
         org = OrganisationFactory(
             credit_balance=Decimal('10.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='sms', description='SMS')
         record_usage(org, 1, format='mms', description='MMS')
@@ -234,7 +234,7 @@ class TestGetTotalMonthlySpend:
     def test_sums_all_formats(self):
         org = OrganisationFactory(
             credit_balance=Decimal('10.00'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         record_usage(org, 1, format='sms', description='SMS')
         record_usage(org, 1, format='mms', description='MMS')
@@ -273,7 +273,7 @@ class TestRefundUsage:
         )
 
     def test_trial_refund_restores_balance(self):
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = self._make_schedule(org, user)
         record_usage(org, 1, 'sms', 'test send', user, schedule)
@@ -284,7 +284,7 @@ class TestRefundUsage:
         assert get_balance(org) == balance_after_deduct + settings.SMS_RATE
 
     def test_trial_refund_creates_refund_transaction(self):
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = self._make_schedule(org, user)
         record_usage(org, 1, 'sms', 'test send', user, schedule)
@@ -323,7 +323,7 @@ class TestRefundUsage:
         ).exists()
 
     def test_refund_is_idempotent(self):
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = self._make_schedule(org, user)
         record_usage(org, 1, 'sms', 'test send', user, schedule)
@@ -338,7 +338,7 @@ class TestRefundUsage:
         ).count() == 1
 
     def test_refund_with_no_original_charge_is_noop(self):
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = self._make_schedule(org, user)
         # No record_usage call
@@ -350,7 +350,7 @@ class TestRefundUsage:
 
     def test_refund_multi_part_sms(self):
         """A 2-part SMS is fully refunded — amount scales with message_parts."""
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = Schedule.objects.create(
             organisation=org,
@@ -377,7 +377,7 @@ class TestRefundUsage:
         assert refund_tx.amount == expected_refund
 
     def test_refund_amount_matches_original_charge(self):
-        org = OrganisationFactory(billing_mode='trial', credit_balance=Decimal('10.00'))
+        org = OrganisationFactory(billing_mode='prepaid', credit_balance=Decimal('10.00'))
         user = UserFactory()
         schedule = self._make_schedule(org, user)
         record_usage(org, 1, 'sms', 'test send', user, schedule)
@@ -568,7 +568,7 @@ class TestUnitRateOnTransaction:
     """Tests that unit_rate is stored on CreditTransaction records."""
 
     def test_trial_deduct_stores_unit_rate(self):
-        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
+        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='prepaid')
         record_usage(org, 1, 'sms', 'test')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
         assert tx.unit_rate == settings.SMS_RATE
@@ -580,7 +580,7 @@ class TestUnitRateOnTransaction:
         assert tx.unit_rate == settings.MMS_RATE
 
     def test_stores_per_org_override_rate(self):
-        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='trial')
+        org = OrganisationFactory(credit_balance=Decimal('1.00'), billing_mode='prepaid')
         ConfigFactory(organisation=org, name='sms_rate', value='0.03')
         record_usage(org, 1, 'sms', 'test')
         tx = CreditTransaction.objects.get(organisation=org, transaction_type='deduct')
@@ -595,7 +595,7 @@ class TestCheckCanSendWithOrgRate:
     def test_custom_rate_affects_cost_check(self):
         org = OrganisationFactory(
             credit_balance=Decimal('0.04'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         # Default rate would block, custom rate $0.03 should allow
         ConfigFactory(organisation=org, name='sms_rate', value='0.03')
@@ -605,7 +605,7 @@ class TestCheckCanSendWithOrgRate:
     def test_custom_rate_blocks_when_insufficient(self):
         org = OrganisationFactory(
             credit_balance=Decimal('0.02'),
-            billing_mode=Organisation.BILLING_TRIAL,
+            billing_mode=Organisation.BILLING_PREPAID,
         )
         ConfigFactory(organisation=org, name='sms_rate', value='0.03')
         allowed, error = check_can_send(org, units=1, format='sms')

@@ -59,9 +59,9 @@ test.describe('Billing Page', () => {
 
   test('shows balance or plan label', async ({ page }) => {
     await page.goto('/app/billing')
-    // Shows "Trial balance" for trial orgs or "Plan" for subscribed orgs
+    // Shows "Prepaid balance" for prepaid orgs or "Plan" for subscribed orgs
     await expect(
-      page.getByText('Trial balance').first().or(page.getByText('Plan').first())
+      page.getByText('Prepaid balance').first().or(page.getByText('Plan').first())
     ).toBeVisible({ timeout: 10000 })
   })
 
@@ -77,14 +77,14 @@ test.describe('Billing Page', () => {
     await expect(page.locator('table').last().locator('tbody tr').first()).toBeVisible()
   })
 
-  test('shows exhausted balance warning when balance is zero (trial only)', async ({ page }) => {
-    // This warning only shows for trial orgs — skip if Clerk has an active subscription.
+  test('shows exhausted balance warning when balance is zero (prepaid only)', async ({ page }) => {
+    // This warning only shows for prepaid orgs — skip if Clerk has an active subscription.
     // Wait for networkidle so Clerk subscription data has time to load before checking.
     await page.goto('/app/billing', { waitUntil: 'networkidle' })
     await expect(page.getByText('Billing').first()).toBeVisible({ timeout: 10000 })
-    // Give Clerk subscription hook time to resolve — check for either Trial balance or Subscribed badge
+    // Give Clerk subscription hook time to resolve — check for either Prepaid balance or Subscribed badge
     await expect(
-      page.getByText('Trial balance').or(page.getByText('Subscribed')).first()
+      page.getByText('Prepaid balance').or(page.getByText('Subscribed')).first()
     ).toBeVisible({ timeout: 10000 })
     const isSubscribed = await page.getByText('Subscribed').first().isVisible().catch(() => false)
     if (isSubscribed) {

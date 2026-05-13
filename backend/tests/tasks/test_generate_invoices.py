@@ -34,9 +34,9 @@ def subscribed_org(db):
 def trial_org(db):
     return Organisation.objects.create(
         clerk_org_id='org_trial_test',
-        name='Trial Test Org',
-        slug='trial-test',
-        billing_mode=Organisation.BILLING_TRIAL,
+        name='Prepaid Test Org',
+        slug='prepaid-test',
+        billing_mode=Organisation.BILLING_PREPAID,
     )
 
 
