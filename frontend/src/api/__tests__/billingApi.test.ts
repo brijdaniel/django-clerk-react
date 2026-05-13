@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { http, HttpResponse } from 'msw'
-import { getBillingSummaryQueryOptions, getBillingTransactionsInfiniteOptions, getInvoicesQueryOptions, getInvoicePreviewQueryOptions, downloadInvoices } from '../billingApi'
+import { getBillingSummaryQueryOptions, getBillingTransactionsInfiniteOptions, getInvoicesQueryOptions, getInvoicePreviewQueryOptions, downloadInvoices, buyCredits } from '../billingApi'
 import { createMockApiClient } from '../../test/test-utils'
 import { server } from '../../test/handlers'
 
@@ -299,6 +299,44 @@ describe('billingApi', () => {
       mockDownloadResponse({ status: 404 })
 
       await expect(downloadInvoices(mockGetToken, [9999])).rejects.toThrow('Not found')
+    })
+  })
+
+  describe('buyCredits', () => {
+    it('returns checkout URL on success', async () => {
+      const result = await buyCredits(client, 25)
+      expect(result).toEqual({ checkout_url: 'https://checkout.stripe.com/cs_mock_123' })
+    })
+
+    it('sends correct amount in request body', async () => {
+      let capturedBody: unknown
+      server.use(
+        http.post('http://localhost:8000/api/billing/buy-credits/', async ({ request }) => {
+          capturedBody = await request.json()
+          return HttpResponse.json({ checkout_url: 'https://checkout.stripe.com/cs_test' })
+        })
+      )
+
+      await buyCredits(client, 100)
+      expect(capturedBody).toEqual({ amount: 100 })
+    })
+
+    it('rejects when API returns 400', async () => {
+      server.use(
+        http.post('http://localhost:8000/api/billing/buy-credits/', () =>
+          HttpResponse.json({ amount: ['Ensure this value is greater than or equal to 5.'] }, { status: 400 })
+        )
+      )
+      await expect(buyCredits(client, 2)).rejects.toThrow()
+    })
+
+    it('rejects when API returns 402 (past due)', async () => {
+      server.use(
+        http.post('http://localhost:8000/api/billing/buy-credits/', () =>
+          HttpResponse.json({ detail: 'Cannot purchase credits while subscription payment is past due.' }, { status: 402 })
+        )
+      )
+      await expect(buyCredits(client, 50)).rejects.toThrow()
     })
   })
 })

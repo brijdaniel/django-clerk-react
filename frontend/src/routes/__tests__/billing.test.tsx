@@ -361,4 +361,30 @@ describe('Manage Plan dialog', () => {
     })
     expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
   })
+
+  it('shows Buy Credits button for prepaid org', async () => {
+    const RouteComp = capturedBillingRouteOptions.component as React.ComponentType
+    renderWithProviders(<RouteComp />)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Buy Credits' })).toBeInTheDocument()
+    })
+  })
+
+  it('does not show Buy Credits button for subscribed org', async () => {
+    server.use(
+      http.get('http://localhost:8000/api/billing/summary/', () =>
+        HttpResponse.json(createBillingSummary({ billing_mode: 'subscribed' }))
+      )
+    )
+    mockUseSubscription.mockReturnValue({
+      data: { status: 'active', subscriptionItems: [{ status: 'active', plan: { name: 'Professional', fee: { amount: 2999 } } }] },
+      isLoading: false,
+    })
+    const RouteComp = capturedBillingRouteOptions.component as React.ComponentType
+    renderWithProviders(<RouteComp />)
+    await waitFor(() => {
+      expect(screen.getByText('Invoices')).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('button', { name: 'Buy Credits' })).not.toBeInTheDocument()
+  })
 })

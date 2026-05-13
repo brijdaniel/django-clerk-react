@@ -294,6 +294,10 @@ export const handlers = [
     return HttpResponse.json(createInvoicePreview())
   }),
 
+  http.post(`${BASE_URL}/api/billing/buy-credits/`, () => {
+    return HttpResponse.json({ checkout_url: 'https://checkout.stripe.com/cs_mock_123' })
+  }),
+
   http.post(`${BASE_URL}/api/billing/invoice-download/`, () => {
     return new HttpResponse(new Blob(['%PDF-1.4 mock'], { type: 'application/pdf' }), {
       headers: {

@@ -215,3 +215,51 @@ class TestCheckoutWebhooks:
 
         purchase = CreditPurchase.objects.get(stripe_checkout_session_id='cs_test_expired')
         assert purchase.status == CreditPurchase.STATUS_EXPIRED
+
+
+@pytest.mark.django_db
+class TestCreditPurchaseIntegration:
+    """Integration test: buy-credits endpoint → webhook → balance updated."""
+
+    def test_full_purchase_flow(self, user, organisation, org_membership):
+        """POST buy-credits creates pending purchase; webhook grants credits and completes it."""
+        from app.utils.stripe import StripeWebhookView
+
+        # 1. Create a pending CreditPurchase (simulating what buy-credits endpoint does)
+        purchase = CreditPurchase.objects.create(
+            organisation=organisation,
+            stripe_checkout_session_id='cs_integration_test',
+            amount=Decimal('100.00'),
+        )
+        initial_balance = get_balance(organisation)
+        assert purchase.status == CreditPurchase.STATUS_PENDING
+
+        # 2. Simulate webhook: checkout.session.completed
+        view = StripeWebhookView()
+        view._handle_checkout_completed({
+            'id': 'cs_integration_test',
+            'payment_status': 'paid',
+            'metadata': {'purchase_type': 'credit_purchase', 'org_id': organisation.clerk_org_id},
+            'customer': 'cus_integration_123',
+        })
+
+        # 3. Verify purchase completed
+        purchase.refresh_from_db()
+        assert purchase.status == CreditPurchase.STATUS_COMPLETED
+        assert purchase.completed_at is not None
+        assert purchase.credit_transaction is not None
+        assert purchase.credit_transaction.transaction_type == 'grant'
+        assert purchase.credit_transaction.amount == Decimal('100.00')
+
+        # 4. Verify balance increased
+        assert get_balance(organisation) == initial_balance + Decimal('100.00')
+
+        # 5. Verify Stripe customer linked
+        organisation.refresh_from_db()
+        assert organisation.billing_customer_id == 'cus_integration_123'
+
+        # 6. Verify can send after purchase
+        from app.utils.billing import check_can_send
+        allowed, error = check_can_send(organisation, units=1, format='sms')
+        assert allowed is True
+        assert error is None
