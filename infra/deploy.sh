@@ -7,9 +7,8 @@
 #   ./infra/deploy.sh preview dev    — preview dev changes without applying
 #   ./infra/deploy.sh preview prod   — preview prod changes without applying
 #
-# Secrets and config are loaded from infra/.env.<env> (gitignored).
-# Same UPPER_SNAKE_CASE names as GitHub secrets — one list, zero conversion.
-# RESOURCE_GROUP in the .env file controls which Azure resource group to deploy to.
+# All config (infrastructure + secrets + app vars) lives in infra/.env.<env>.
+# One file per environment. deploy.sh passes everything to Bicep as parameters.
 
 set -e
 
@@ -18,12 +17,12 @@ ENV="${2:?Usage: deploy.sh <deploy|preview> <dev|prod>}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/.env.${ENV}"
-PARAM_FILE="${SCRIPT_DIR}/main.${ENV}.bicepparam"
+TEMPLATE_FILE="${SCRIPT_DIR}/main.bicep"
 
 [ -f "$ENV_FILE" ] || { echo "Error: $ENV_FILE not found. Copy from .env.example and fill in values."; exit 1; }
-[ -f "$PARAM_FILE" ] || { echo "Error: $PARAM_FILE not found."; exit 1; }
+[ -f "$TEMPLATE_FILE" ] || { echo "Error: $TEMPLATE_FILE not found."; exit 1; }
 
-# Read RESOURCE_GROUP from .env file
+# Read RESOURCE_GROUP and build Bicep params from the .env file
 RESOURCE_GROUP=""
 PARAMS=""
 while IFS='=' read -r key value; do
@@ -43,21 +42,21 @@ done < "$ENV_FILE"
 echo "Environment: $ENV"
 echo "Resource group: $RESOURCE_GROUP"
 echo "Action: $ACTION"
-echo "Param file: $PARAM_FILE"
-echo "Secrets from: $ENV_FILE"
+echo "Template: $TEMPLATE_FILE"
+echo "Config from: $ENV_FILE"
 echo ""
 
 if [ "$ACTION" = "preview" ]; then
   echo "Running what-if preview (no changes will be applied)..."
   az deployment group create \
     --resource-group "$RESOURCE_GROUP" \
-    --parameters "$PARAM_FILE" \
+    --template-file "$TEMPLATE_FILE" \
     --parameters $PARAMS \
     --what-if
 elif [ "$ACTION" = "deploy" ]; then
   az deployment group create \
     --resource-group "$RESOURCE_GROUP" \
-    --parameters "$PARAM_FILE" \
+    --template-file "$TEMPLATE_FILE" \
     --parameters $PARAMS
 else
   echo "Error: Unknown action '$ACTION'. Use 'deploy' or 'preview'."
