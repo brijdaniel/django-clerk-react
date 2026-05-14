@@ -553,17 +553,95 @@ The service principal also needs `AcrPush` role on the ACR for image pushes.
 
 ### Step-by-Step Setup
 
-1. **Create resource group**: `az group create --name rg-1reach-dev --location <region>`
-2. **Copy env file**: `cp infra/.env.example infra/.env.dev` and fill in secret values
-3. **Fill in param file**: Edit `infra/main.dev.bicepparam` with your non-secret config (PostgreSQL host, Clerk URLs, etc.)
-4. **Provision**: `./infra/deploy.sh deploy dev`
-5. **Grant AcrPush to GitHub SP**: `az role assignment create --assignee <SP_APP_ID> --role AcrPush --scope <ACR_RESOURCE_ID>`
-6. **Set GitHub secrets**: All secrets listed above
-7. **Configure Clerk**: Add dev frontend URL as allowed origin, create webhook endpoint pointing to `https://<dev-api-fqdn>/api/webhooks/clerk/`
-8. **Configure Stripe**: Create webhook endpoint pointing to `https://<dev-api-fqdn>/api/webhooks/stripe/` (API version `2026-03-25.dahlia`, subscribe to `invoice.paid`, `invoice.payment_failed`, `invoice.overdue`, `invoice.voided`, `checkout.session.completed`, `checkout.session.expired`)
-9. **Push to `development` branch**: Triggers `deploy-dev.yml` which builds the first real image and deploys it
+#### Prerequisites
 
-Repeat steps 1-8 for production using `rg-1reach-prod`, `infra/.env.prod`, and `main.prod.bicepparam`.
+You need an existing Azure resource group with PostgreSQL Flexible Server, Azure Cache for Redis, and Azure Blob Storage already provisioned. The Bicep templates create the ACA-specific resources (ACR, ACA environment, container apps, managed identity, Log Analytics) inside that resource group.
+
+#### 1. Create and fill in the environment config
+
+```bash
+cp infra/.env.example infra/.env.dev
+```
+
+Edit `infra/.env.dev` with all values — infrastructure params (scaling, CPU/memory), secrets (DB password, API keys), and app config (Clerk URLs, Sentry DSN, etc.). See `.env.example` for the full list.
+
+#### 2. Preview and provision
+
+```bash
+# Dry run — see what will be created
+./infra/deploy.sh preview dev
+
+# Provision infrastructure (creates ACR, ACA environment, container apps with placeholder images)
+./infra/deploy.sh deploy dev
+```
+
+#### 3. Build and push the backend Docker image
+
+The image must be built for `linux/amd64` (ACA runs x86, not ARM):
+
+```bash
+az acr login --name <acr-name>
+
+docker build --platform linux/amd64 \
+  --build-arg DEPLOY_SHA=manual-test \
+  -t <acr-name>.azurecr.io/1reach-backend:dev-test \
+  ./backend
+
+docker push <acr-name>.azurecr.io/1reach-backend:dev-test
+```
+
+#### 4. Update container apps with the real image
+
+```bash
+IMAGE="<acr-name>.azurecr.io/1reach-backend:dev-test"
+RG="<resource-group>"
+
+az containerapp update --name onereach-api-dev --resource-group $RG --image $IMAGE
+az containerapp update --name onereach-worker-dev --resource-group $RG --image $IMAGE
+az containerapp update --name onereach-beat-dev --resource-group $RG --image $IMAGE
+```
+
+#### 5. Verify
+
+```bash
+# Check the API container logs
+az containerapp logs show --name onereach-api-dev --resource-group $RG --follow
+
+# Health check (DB + Redis connectivity)
+curl https://<api-fqdn>/api/health/
+
+# Smoke test (DB write + Redis write + deploy version)
+curl https://<api-fqdn>/api/health/smoke/
+```
+
+The API FQDN is shown in the `deploy` output, or find it in the Azure Portal under the container app's Overview page.
+
+#### 6. Configure Clerk and Stripe webhooks
+
+- **Clerk Dashboard → Webhooks → Add Endpoint:** URL: `https://<api-fqdn>/api/webhooks/clerk/`. Subscribe to all events listed in [Clerk Configuration](#clerk-configuration).
+- **Stripe Dashboard → Webhooks → Add endpoint:** URL: `https://<api-fqdn>/api/webhooks/stripe/`. API version `2026-03-25.dahlia`. Subscribe to events listed in [Stripe Configuration](#stripe-configuration).
+
+#### 7. Grant AcrPush to GitHub Actions service principal
+
+Required for the CD workflows to push images:
+
+```bash
+az role assignment create --assignee <SP_APP_ID> --role AcrPush --scope <ACR_RESOURCE_ID>
+```
+
+#### 8. Set GitHub secrets
+
+Set all secrets listed in the [GitHub Secrets](#github-secrets) table above.
+
+#### 9. Test the full flow
+
+- Sign in via Clerk on the dev frontend
+- Send a test message — verify schedule transitions
+- Check billing, webhook delivery, worker/beat logs
+
+#### 10. Set up production
+
+Repeat steps 1-9 using `infra/.env.prod` with production values (`DEBUG=0`, `TEST=False`, higher scaling/CPU, production Clerk/Stripe keys, etc.).
 
 ### Migration Safety (production only)
 
