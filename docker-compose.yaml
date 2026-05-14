@@ -1,4 +1,4 @@
-# for local dev only
+# Local development stack
 
 services:
   db:
@@ -16,11 +16,13 @@ services:
       - backend/.env
 
   backend:
-    image: python:latest
-    working_dir: /app
-    command: sh -c "pip install uv -q && uv sync && uv run python manage.py migrate --noinput && uv run python manage.py runserver 0.0.0.0:8000"
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["api"]
     volumes:
       - ./backend:/app
+      - backend_venv:/app/.venv  # preserve container's venv from being overwritten by host mount
     ports:
       - "8000:8000"
     env_file:
@@ -28,6 +30,7 @@ services:
     environment:
       - DB_CONN_MAX_AGE=0
       - DB_POOL=false
+      - CONTAINER_ROLE=api
     depends_on:
       db:
         condition: service_healthy
@@ -50,16 +53,19 @@ services:
       retries: 5
 
   celery_worker:
-    image: python:latest
-    working_dir: /app
-    command: sh -c "pip install uv -q && uv sync && uv run celery -A app.celery worker --loglevel=INFO --concurrency=4 -Q default,messages"
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["worker"]
     volumes:
       - ./backend:/app
+      - backend_venv:/app/.venv
     env_file:
       - backend/.env
     environment:
       - DB_CONN_MAX_AGE=0
       - DB_POOL=false
+      - CONTAINER_ROLE=worker
     depends_on:
       db:
         condition: service_healthy
@@ -67,16 +73,19 @@ services:
         condition: service_healthy
 
   celery_beat:
-    image: python:latest
-    working_dir: /app
-    command: sh -c "pip install uv -q && uv sync && uv run celery -A app.celery beat --loglevel=INFO"
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["beat"]
     volumes:
       - ./backend:/app
+      - backend_venv:/app/.venv
     env_file:
       - backend/.env
     environment:
       - DB_CONN_MAX_AGE=0
       - DB_POOL=false
+      - CONTAINER_ROLE=beat
     depends_on:
       db:
         condition: service_healthy
@@ -108,3 +117,4 @@ services:
 
 volumes:
   postgres_data:
+  backend_venv:  # persists the container's .venv so host volume mount doesn't overwrite it

@@ -1,4 +1,4 @@
-name: Deploy Backend
+name: Deploy Production
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
   # TODO (az CLI 2.86.0, May 2026): update deprecated postgres flexible-server args:
   #   firewall-rule: --name (server) → --server-name, --rule-name (rule) → --name
   #   backup create: --name (server) → --server-name, --backup-name → --name
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,9 +53,8 @@ jobs:
           POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
           POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
-          POSTGRES_PORT: "5432"
+          POSTGRES_PORT: '5432'
         run: |
-          # First verify we can connect to the database
           uv run python -c "
           import django, os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'app.settings')
@@ -63,7 +62,7 @@ jobs:
           from django.db import connection
           connection.ensure_connection()
           print('Database connection OK')
-          " || { echo "::error::Cannot connect to production database. Check AZURE_POSTGRES_HOST secret."; exit 1; }
+          " || { echo "::error::Cannot connect to production database."; exit 1; }
 
           if uv run python manage.py migrate --check; then
             echo "No pending migrations — skipping replica test."
@@ -128,10 +127,8 @@ jobs:
           POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
           POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
-          POSTGRES_PORT: "5432"
+          POSTGRES_PORT: '5432'
         run: |
-          echo "Pending migrations:"
-          uv run python manage.py showmigrations --plan | grep "\[ \]" || echo "  (none)"
           echo "Running test migration on replica..."
           uv run python manage.py migrate --no-input
 
@@ -144,7 +141,6 @@ jobs:
             --resource-group ${{ secrets.AZURE_POSTGRES_RESOURCE_GROUP }} \
             --name ${{ secrets.AZURE_POSTGRES_SERVER_NAME }} \
             --backup-name "$BACKUP_NAME"
-          echo "Backup created: $BACKUP_NAME"
 
       - name: Run migration on production DB
         if: steps.check.outputs.pending == 'true'
@@ -156,7 +152,7 @@ jobs:
           POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
           POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
-          POSTGRES_PORT: "5432"
+          POSTGRES_PORT: '5432'
         run: uv run python manage.py migrate --no-input
 
       - name: Delete replica
@@ -174,99 +170,50 @@ jobs:
             --name ${{ secrets.AZURE_POSTGRES_SERVER_NAME }} \
             --rule-name github-runner --yes 2>/dev/null || true
 
-      - name: Stamp deploy version
-        run: sed -i "s/DEPLOY_SHA = 'dev'/DEPLOY_SHA = '${{ github.sha }}'/" backend/app/health.py
+      - name: Log in to ACR
+        run: az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
 
-      - name: Remove CI venv from artifact
-        run: rm -rf backend/.venv
+      - name: Build and push Docker image
+        working-directory: backend
+        run: |
+          IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/1reach-backend:${{ github.sha }}"
+          IMAGE_LATEST="${{ secrets.ACR_LOGIN_SERVER }}/1reach-backend:latest"
+          docker build \
+            --build-arg DEPLOY_SHA=${{ github.sha }} \
+            -t "$IMAGE" \
+            -t "$IMAGE_LATEST" \
+            .
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
 
-      - name: Upload backend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend
-          path: backend
-          retention-days: 7
-
-  deploy-api:
-    needs: build
+  deploy:
+    needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Download backend artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend
-          path: backend
-
-      - name: Deploy to Azure App Service — backend
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_BACKEND_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_BACKEND_PUBLISH_PROFILE }}
-          package: backend
-
-  deploy-worker:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download backend artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend
-          path: backend
-
-      - name: Deploy to Azure App Service — celery-worker
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WORKER_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_WORKER_PUBLISH_PROFILE }}
-          package: backend
-
       - name: Azure login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Restart worker
+      - name: Update container apps
+        env:
+          IMAGE: ${{ secrets.ACR_LOGIN_SERVER }}/1reach-backend:${{ github.sha }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
         run: |
-          az webapp stop --name ${{ secrets.AZURE_WORKER_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
-          sleep 5
-          az webapp start --name ${{ secrets.AZURE_WORKER_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
-
-  deploy-beat:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download backend artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend
-          path: backend
-
-      - name: Deploy to Azure App Service — celery-beat
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_BEAT_APP_NAME }}
-          publish-profile: ${{ secrets.AZURE_BEAT_PUBLISH_PROFILE }}
-          package: backend
-
-      - name: Azure login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Restart beat
-        run: |
-          az webapp stop --name ${{ secrets.AZURE_BEAT_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
-          sleep 5
-          az webapp start --name ${{ secrets.AZURE_BEAT_APP_NAME }} --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }}
+          az containerapp update --name ${{ secrets.ACA_API_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
+          az containerapp update --name ${{ secrets.ACA_WORKER_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
+          az containerapp update --name ${{ secrets.ACA_BEAT_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
 
   verify-health:
-    needs: [deploy-api, deploy-worker, deploy-beat]
+    needs: deploy
     runs-on: ubuntu-latest
     steps:
       - name: Wait for new instance (smoke test + version check)
         run: |
-          URL="${{ secrets.VITE_API_BASE_URL }}/api/health/smoke/"
+          URL="${{ secrets.VITE_API_BASE_URL_PROD }}/api/health/smoke/"
           EXPECTED_SHA="${{ github.sha }}"
           echo "Polling $URL until version=$EXPECTED_SHA..."
           for i in $(seq 1 30); do

@@ -1,0 +1,139 @@
+name: Deploy Dev
+
+on:
+  push:
+    branches: [development]
+    paths:
+      - 'backend/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Python (for migrations)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (for migrations)
+        working-directory: backend
+        run: pip install uv && uv sync
+
+      - name: Run migrations on dev DB
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: app.settings
+          DJANGO_SECRET_KEY: dev-migration-key
+          POSTGRES_HOST: ${{ secrets.AZURE_POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          POSTGRES_PORT: '5432'
+        run: |
+          if uv run python manage.py migrate --check; then
+            echo "No pending migrations."
+          else
+            echo "Applying migrations to dev DB..."
+            uv run python manage.py migrate --no-input
+          fi
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - name: Build and push Docker image
+        working-directory: backend
+        run: |
+          IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/1reach-backend:dev-${{ github.sha }}"
+          docker build \
+            --build-arg DEPLOY_SHA=${{ github.sha }} \
+            -t "$IMAGE" \
+            .
+          docker push "$IMAGE"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Update container apps
+        env:
+          IMAGE: ${{ secrets.ACR_LOGIN_SERVER }}/1reach-backend:dev-${{ github.sha }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          az containerapp update --name ${{ secrets.ACA_DEV_API_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
+          az containerapp update --name ${{ secrets.ACA_DEV_WORKER_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
+          az containerapp update --name ${{ secrets.ACA_DEV_BEAT_APP_NAME }} \
+            --resource-group "$RG" --image "$IMAGE"
+
+  verify-health:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for new instance (smoke test + version check)
+        run: |
+          URL="${{ secrets.VITE_API_BASE_URL_DEV }}/api/health/smoke/"
+          EXPECTED_SHA="${{ github.sha }}"
+          echo "Polling $URL until version=$EXPECTED_SHA..."
+          for i in $(seq 1 30); do
+            RESP=$(curl -s -w "\n%{http_code}" --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            STATUS=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+            echo "Attempt $i/30: HTTP $STATUS — $BODY"
+            if [ "$STATUS" = "200" ] && echo "$BODY" | grep -q "$EXPECTED_SHA"; then
+              echo "New instance confirmed — smoke test passed."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "New instance did not become healthy within 5 minutes."
+          exit 1
+
+  run-e2e-tests:
+    needs: verify-health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Run E2E tests against dev environment
+        working-directory: frontend
+        env:
+          CLERK_PUBLISHABLE_KEY: ${{ secrets.E2E_VITE_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.E2E_CLERK_SECRET_KEY }}
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL_DEV }}
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-dev
+          path: frontend/playwright-report/
+          retention-days: 14
