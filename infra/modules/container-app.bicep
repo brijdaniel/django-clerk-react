@@ -30,6 +30,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
   properties: {
     managedEnvironmentId: environmentId
     configuration: {
+      activeRevisionsMode: 'Single'
       registries: [
         {
           server: acrLoginServer

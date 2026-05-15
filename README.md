@@ -590,7 +590,7 @@ docker build --platform linux/amd64 \
 docker push <acr-name>.azurecr.io/1reach-backend:dev-test
 ```
 
-#### 4. Update container apps with the real image
+#### 4. Deploy the real image to container apps
 
 ```bash
 IMAGE="<acr-name>.azurecr.io/1reach-backend:dev-test"
@@ -600,6 +600,8 @@ az containerapp update --name onereach-api-dev --resource-group $RG --image $IMA
 az containerapp update --name onereach-worker-dev --resource-group $RG --image $IMAGE
 az containerapp update --name onereach-beat-dev --resource-group $RG --image $IMAGE
 ```
+
+This is safe because `activeRevisionsMode: 'Single'` (set by Bicep) ensures the old revision is automatically deactivated when the new one is healthy. The image update creates a new revision that inherits all existing config (ports, probes, env vars, scaling) from the current revision.
 
 #### 5. Verify
 

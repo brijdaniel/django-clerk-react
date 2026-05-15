@@ -24,7 +24,7 @@ def _get_redis_client():
         # "CERT_NONE" from query params, so pass the constant as a kwarg.
         url = url.split('?')[0] if 'ssl_cert_reqs' in url else url
         kwargs['ssl_cert_reqs'] = ssl.CERT_NONE
-    return redis.from_url(url, **kwargs)
+    return redis.from_url(url, socket_connect_timeout=10, socket_timeout=10, **kwargs)
 
 
 class HealthCheckView(APIView):
