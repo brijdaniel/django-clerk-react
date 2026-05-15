@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const baseURL = process.env.E2E_BASE_URL || 'http://localhost:5173'
+const isRemote = baseURL !== 'http://localhost:5173'
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -10,7 +13,7 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     // storageState is set only on the chromium project (auth.setup.ts must run first)
@@ -37,12 +40,14 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: 'npm run dev -- --host 0.0.0.0',
-    url: 'http://localhost:5173',
-    // Always reuse the existing dev server (already started by docker-compose).
-    // In CI, the server is started fresh by the pipeline before running tests.
-    reuseExistingServer: true,
-    timeout: 30000,
-  },
+  // Only start a local dev server when running against localhost.
+  // When E2E_BASE_URL points to a deployed environment, skip the local server.
+  ...(!isRemote && {
+    webServer: {
+      command: 'npm run dev -- --host 0.0.0.0',
+      url: 'http://localhost:5173',
+      reuseExistingServer: true,
+      timeout: 30000,
+    },
+  }),
 })
