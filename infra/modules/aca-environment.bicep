@@ -1,5 +1,6 @@
 param location string
 param ENVIRONMENT_NAME string
+param infrastructureSubnetId string = '' // Empty = default networking (dev). Set to subnet ID for VNet (prod).
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-02-01' = {
   name: 'onereach-logs-${ENVIRONMENT_NAME}'
@@ -22,6 +23,10 @@ resource env 'Microsoft.App/managedEnvironments@2025-01-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
+    vnetConfiguration: !empty(infrastructureSubnetId) ? {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: false
+    } : null
   }
 }
 

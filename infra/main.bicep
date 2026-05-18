@@ -16,6 +16,13 @@ param CREATE_ACR string // 'true' to create ACR, 'false' to reuse existing
 param ACR_LOGIN_SERVER string // Used when CREATE_ACR=false (e.g. '1reachcr.azurecr.io')
 param IMAGE_NAME string = '' // Empty on first deploy → uses placeholder image
 
+// --- VNet (prod only) ---
+param USE_VNET string // 'true' for prod (VNet + private endpoints), 'false' for dev
+param VNET_NAME string
+param VNET_CIDR string
+param ACA_SUBNET_CIDR string
+param PE_SUBNET_CIDR string
+
 // --- Scaling ---
 param API_MIN_REPLICAS int
 param API_MAX_REPLICAS int
@@ -97,11 +104,23 @@ module acr 'modules/acr.bicep' = if (CREATE_ACR == 'true') {
 
 var acrServer = CREATE_ACR == 'true' ? acr.outputs.loginServer : ACR_LOGIN_SERVER
 
+module vnet 'modules/vnet.bicep' = if (USE_VNET == 'true') {
+  name: 'vnet'
+  params: {
+    location: location
+    VNET_NAME: VNET_NAME
+    VNET_CIDR: VNET_CIDR
+    ACA_SUBNET_CIDR: ACA_SUBNET_CIDR
+    PE_SUBNET_CIDR: PE_SUBNET_CIDR
+  }
+}
+
 module acaEnv 'modules/aca-environment.bicep' = {
   name: 'aca-environment'
   params: {
     location: location
     ENVIRONMENT_NAME: ENVIRONMENT_NAME
+    infrastructureSubnetId: USE_VNET == 'true' ? vnet.outputs.acaSubnetId : ''
   }
 }
 
