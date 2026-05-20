@@ -88,7 +88,8 @@ case "$ACTION" in
     [ -n "$ACR_NAME" ] || { echo "Error: ACR_NAME not set in $ENV_FILE"; exit 1; }
     ACR_SERVER="${ACR_NAME}.azurecr.io"
     SHA=$(git -C "$ROOT_DIR" rev-parse --short HEAD)
-    IMAGE="${ACR_SERVER}/1reach-backend:${ENV}-${SHA}"
+    TIMESTAMP=$(date +%s)
+    IMAGE="${ACR_SERVER}/1reach-backend:${ENV}-${SHA}-${TIMESTAMP}"
 
     echo "Building image for linux/amd64..."
     az acr login --name "$ACR_NAME"
