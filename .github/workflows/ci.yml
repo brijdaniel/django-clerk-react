@@ -8,6 +8,7 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    environment: dev
     steps:
       - uses: actions/checkout@v4
 
@@ -17,16 +18,16 @@ jobs:
           DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
           DEBUG=1
           TEST=1
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=app
+          POSTGRES_USER=app
+          POSTGRES_PASSWORD=app
           POSTGRES_HOST=db
           POSTGRES_PORT=5432
           ALLOWED_HOSTS=localhost,127.0.0.1
           CORS_ALLOWED_ORIGINS=http://localhost:5173
-          CLERK_FRONTEND_API=${{ secrets.E2E_CLERK_FRONTEND_API }}
-          CLERK_SECRET_KEY=${{ secrets.E2E_CLERK_SECRET_KEY }}
-          CLERK_WEBHOOK_SIGNING_SECRET=${{ secrets.E2E_CLERK_WEBHOOK_SIGNING_SECRET }}
+          CLERK_FRONTEND_API=${{ vars.CLERK_FRONTEND_API }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_WEBHOOK_SIGNING_SECRET=${{ secrets.CLERK_WEBHOOK_SIGNING_SECRET }}
           CLERK_AUTHORIZED_PARTIES=http://localhost:5173
           CELERY_BROKER_URL=redis://redis:6379/0
           CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -41,7 +42,7 @@ jobs:
       - name: Run backend tests
         run: |
           docker compose up -d redis
-          docker compose run --rm backend sh -c "pip install uv -q && uv sync -q && uv run python -m pytest tests/ -q"
+          docker compose run --rm -e CONTAINER_ROLE= backend sh -c "pip install uv -q && uv sync -q && uv run python -m pytest tests/ -q"
 
   frontend:
     runs-on: ubuntu-latest
@@ -68,24 +69,25 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    environment: dev
     steps:
       - uses: actions/checkout@v4
 
       - name: Create backend/.env
         run: |
-          cat > backend/.env <<'EOF'
+          cat > backend/.env <<EOF
           DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
           DEBUG=1
           TEST=True
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=app
+          POSTGRES_USER=app
+          POSTGRES_PASSWORD=app
           POSTGRES_HOST=db
           POSTGRES_PORT=5432
           ALLOWED_HOSTS=localhost,127.0.0.1,backend
           CORS_ALLOWED_ORIGINS=http://localhost:5173
-          CLERK_FRONTEND_API=${{ secrets.E2E_CLERK_FRONTEND_API }}
-          CLERK_SECRET_KEY=${{ secrets.E2E_CLERK_SECRET_KEY }}
+          CLERK_FRONTEND_API=${{ vars.CLERK_FRONTEND_API }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
           CLERK_AUTHORIZED_PARTIES=http://localhost:5173
           CELERY_BROKER_URL=redis://redis:6379/0
           CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -99,7 +101,7 @@ jobs:
 
       - name: Create frontend/.env
         run: |
-          cat > frontend/.env <<'EOF'
+          cat > frontend/.env <<EOF
           VITE_CLERK_PUBLISHABLE_KEY=${{ secrets.E2E_VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_API_BASE_URL=http://localhost:8000
           EOF

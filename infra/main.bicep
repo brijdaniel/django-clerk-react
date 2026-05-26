@@ -80,6 +80,7 @@ param SMS_RATE string
 param MMS_RATE string
 param DEBUG string
 param TEST string
+param SKIP_AUTO_MIGRATE string = 'false'
 
 // ============================================================================
 // Modules
@@ -200,6 +201,7 @@ var sharedEnv = [
   { name: 'SESSION_COOKIE_SECURE', value: 'True' }
   { name: 'CSRF_COOKIE_SECURE', value: 'True' }
   { name: 'SECURE_HSTS_SECONDS', value: '31536000' }
+  { name: 'SKIP_AUTO_MIGRATE', value: SKIP_AUTO_MIGRATE }
 ]
 
 // Use placeholder image on first deploy (ACR is empty until CI pushes a real image)

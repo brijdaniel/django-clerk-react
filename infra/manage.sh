@@ -1,22 +1,22 @@
 #!/bin/bash
-# Deploy and manage 1Reach infrastructure.
+# Manage 1Reach infrastructure (non-deployment operations).
+# Code + config deployments are handled by GitHub Actions — push to main (prod)
+# or development (dev). See .github/workflows/deploy-*.yml.
 #
 # Usage:
-#   ./infra/deploy.sh init dev        — first-time setup (creates ACA environment, VNet, identity, container apps with placeholder image)
-#   ./infra/deploy.sh deploy dev      — build image + deploy everything atomically (code + config + secrets in one revision)
-#   ./infra/deploy.sh preview dev     — preview infrastructure changes (dry run)
-#   ./infra/deploy.sh stop dev        — scale all containers to zero (no cost)
-#   ./infra/deploy.sh start dev       — restore containers to .env scaling config
+#   ./infra/manage.sh init dev        — first-time setup (creates ACA environment, VNet, identity, container apps with placeholder image)
+#   ./infra/manage.sh preview dev     — preview Bicep changes (dry run)
+#   ./infra/manage.sh stop dev        — scale all containers to zero (no cost)
+#   ./infra/manage.sh start dev       — restore containers to .env scaling config
 #
 # All config lives in infra/.env.<env>. One file per environment.
 
 set -e
 
-ACTION="${1:?Usage: deploy.sh <init|deploy|preview|stop|start> <dev|prod>}"
-ENV="${2:?Usage: deploy.sh <init|deploy|preview|stop|start> <dev|prod>}"
+ACTION="${1:?Usage: manage.sh <init|preview|stop|start> <dev|prod>}"
+ENV="${2:?Usage: manage.sh <init|preview|stop|start> <dev|prod>}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="${SCRIPT_DIR}/.env.${ENV}"
 TEMPLATE_FILE="${SCRIPT_DIR}/main.bicep"
 
@@ -25,7 +25,6 @@ TEMPLATE_FILE="${SCRIPT_DIR}/main.bicep"
 # Read config from .env file
 RESOURCE_GROUP=""
 ENVIRONMENT_NAME=""
-ACR_NAME=""
 API_MIN_REPLICAS=""
 API_MAX_REPLICAS=""
 WORKER_MIN_REPLICAS=""
@@ -38,7 +37,6 @@ while IFS='=' read -r key value; do
   case "$key" in
     RESOURCE_GROUP)       RESOURCE_GROUP="$value" ;;
     ENVIRONMENT_NAME)     ENVIRONMENT_NAME="$value"; PARAMS="$PARAMS $key=$value" ;;
-    ACR_NAME)             ACR_NAME="$value"; PARAMS="$PARAMS $key=$value" ;;
     API_MIN_REPLICAS)     API_MIN_REPLICAS="$value"; PARAMS="$PARAMS $key=$value" ;;
     API_MAX_REPLICAS)     API_MAX_REPLICAS="$value"; PARAMS="$PARAMS $key=$value" ;;
     WORKER_MIN_REPLICAS)  WORKER_MIN_REPLICAS="$value"; PARAMS="$PARAMS $key=$value" ;;
@@ -71,7 +69,7 @@ case "$ACTION" in
 
   init)
     # First-time setup — creates infrastructure with placeholder images.
-    # Run once per environment, then use 'deploy' for everything after.
+    # Run once per environment, then push to the appropriate branch to deploy.
     echo "Initialising infrastructure (placeholder images)..."
     az deployment group create \
       --resource-group "$RESOURCE_GROUP" \
@@ -79,35 +77,7 @@ case "$ACTION" in
       --parameters $PARAMS
     echo ""
     echo "Init complete. Container apps created with placeholder images."
-    echo "Run './infra/deploy.sh deploy $ENV' to build and deploy the real application."
-    ;;
-
-  deploy)
-    # Build image, push to ACR, then run Bicep with image + all config.
-    # Everything deploys in ONE atomic revision — no config/image mismatch.
-    [ -n "$ACR_NAME" ] || { echo "Error: ACR_NAME not set in $ENV_FILE"; exit 1; }
-    ACR_SERVER="${ACR_NAME}.azurecr.io"
-    SHA=$(git -C "$ROOT_DIR" rev-parse --short HEAD)
-    TIMESTAMP=$(date +%s)
-    IMAGE="${ACR_SERVER}/1reach-backend:${ENV}-${SHA}-${TIMESTAMP}"
-
-    echo "Building image for linux/amd64..."
-    az acr login --name "$ACR_NAME"
-    docker build --platform linux/amd64 \
-      --build-arg DEPLOY_SHA="$SHA" \
-      -t "$IMAGE" \
-      "${ROOT_DIR}/backend"
-
-    echo "Pushing $IMAGE..."
-    docker push "$IMAGE"
-
-    echo "Deploying infrastructure + image..."
-    az deployment group create \
-      --resource-group "$RESOURCE_GROUP" \
-      --template-file "$TEMPLATE_FILE" \
-      --parameters $PARAMS IMAGE_NAME="$IMAGE"
-    echo ""
-    echo "Deploy complete: $IMAGE"
+    echo "Push to 'development' (dev) or 'main' (prod) to deploy the real application via CI."
     ;;
 
   stop)
@@ -127,7 +97,7 @@ case "$ACTION" in
     ;;
 
   *)
-    echo "Error: Unknown action '$ACTION'. Use 'init', 'deploy', 'preview', 'stop', or 'start'."
+    echo "Error: Unknown action '$ACTION'. Use 'init', 'preview', 'stop', or 'start'."
     exit 1
     ;;
 esac

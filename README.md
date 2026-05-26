@@ -472,8 +472,8 @@ main branch
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | `ci.yml` | PRs to `development` | Runs pytest, vitest, typecheck, E2E in GitHub docker runners |
-| `deploy-dev.yml` | Push to `development` | Builds image → pushes to ACR → deploys to dev ACA → runs E2E against dev |
-| `deploy-prod.yml` | Push to `main` | Replica-tests migrations → builds image → deploys to prod ACA → smoke test |
+| `deploy-dev.yml` | Push to `development` (`backend/**` or `infra/**`) | Migrations → builds image → Bicep deploy (code + config atomic) → E2E tests |
+| `deploy-prod.yml` | Push to `main` (`backend/**` or `infra/**`) | Replica-tests migrations → builds image → Bicep deploy (code + config atomic) → smoke test |
 | `deploy-frontend.yml` | Push to `development` or `main` (frontend changes) | Builds Vite → deploys to dev or prod Static Web App |
 
 ### Infrastructure as Code (Bicep)
@@ -483,7 +483,7 @@ All Azure resources are defined in `infra/`:
 ```
 infra/
 ├── main.bicep                  # Orchestrator — all params, modules, env vars
-├── deploy.sh                   # CLI tool (deploy, push, stop, start, preview)
+├── manage.sh                   # CLI tool (init, preview, stop, start)
 ├── .env.example                # Template — copy to .env.dev / .env.prod
 └── modules/
     ├── identity.bicep          # User-assigned managed identity
@@ -492,31 +492,27 @@ infra/
     └── container-app.bicep     # Reusable container app module
 ```
 
-**Provisioning:**
+**Deployments are CI-driven.** Push to `development` or `main` to deploy. GitHub Actions builds the Docker image, runs migrations, and deploys via Bicep — code, config, secrets, and env vars are all applied in one atomic revision. This avoids config/image mismatch. ACA performs a rolling revision update — it creates a new revision, routes traffic to it once healthy, and deactivates the old revision (`activeRevisionsMode: 'Single'`). No downtime. If nothing changed, Bicep detects no diff and does nothing.
+
+**Local management commands** (non-deployment operations):
 
 ```bash
 # First-time setup — creates ACA environment, VNet, identity, container apps with placeholder image
-./infra/deploy.sh init dev
-
-# Build image + deploy everything atomically (code + config + secrets in one revision)
-# Use when: deploying code changes, updating env vars/secrets, or any config change
-./infra/deploy.sh deploy dev
+./infra/manage.sh init dev
 
 # Preview what Bicep will create/change (dry run — no changes applied)
-./infra/deploy.sh preview dev
+./infra/manage.sh preview dev
 
 # Stop all containers (scales to zero replicas — no cost while stopped)
 # Use when: done working for the day, environment not needed temporarily
-./infra/deploy.sh stop dev
+./infra/manage.sh stop dev
 
 # Start all containers (restores scaling from .env file)
 # Use when: resuming work, need the environment running again
-./infra/deploy.sh start dev
+./infra/manage.sh start dev
 ```
 
-All config lives in one file per environment: `infra/.env.dev` or `infra/.env.prod` (gitignored). Copy `infra/.env.example` to get started.
-
-`deploy` builds a Docker image, pushes it to ACR, and runs the full Bicep template — code, config, secrets, and env vars are all applied in one atomic revision. This avoids config/image mismatch. Safe to run repeatedly on a running environment. ACA performs a rolling revision update — it creates a new revision, routes traffic to it once healthy, and deactivates the old revision (`activeRevisionsMode: 'Single'`). No downtime. If nothing changed, Bicep detects no diff and does nothing.
+Local `.env` files (`infra/.env.dev`, `infra/.env.prod`) are gitignored and used only by `manage.sh` for `init`, `preview`, `stop`, and `start`. All deployment config lives in GitHub Environment secrets and variables.
 
 ### Environment Variables
 
@@ -531,37 +527,85 @@ Env vars are **not baked into the Docker image**. The image is generic — the s
 
 ### GitHub Actions Configuration
 
-**Secrets** (sensitive values):
+The deploy workflows use **GitHub Environments** (`dev` and `prod`) so that the same secret/variable names resolve to different values per environment. Create both environments in Settings → Environments.
+
+**Environment-level secrets** (set per environment — `dev` and `prod` each get their own values):
+
+| Secret | Purpose |
+|--------|---------|
+| `DJANGO_SECRET_KEY` | Django secret key |
+| `POSTGRES_PASSWORD` | Database password |
+| `CLERK_SECRET_KEY` | Clerk secret key (`sk_...`) |
+| `CLERK_WEBHOOK_SIGNING_SECRET` | Clerk webhook signing secret (`whsec_...`) |
+| `STRIPE_SECRET_KEY` | Stripe secret key (`sk_...`) |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+| `CELERY_BROKER_URL` | Redis URL for Celery broker |
+| `AZURE_STORAGE_ACCOUNT_KEY` | Azure Storage account key |
+| `WELCORP_PASSWORD` | Welcorp API password |
+| `WELCORP_CALLBACK_SECRET` | Welcorp callback verification secret |
+| `AZURE_POSTGRES_HOST` | PostgreSQL host (for CI migrations) |
+| `AZURE_POSTGRES_DB` | PostgreSQL database name |
+| `AZURE_POSTGRES_USER` | PostgreSQL user |
+| `AZURE_POSTGRES_PASSWORD` | PostgreSQL password |
+| `AZURE_POSTGRES_RESOURCE_GROUP` | PostgreSQL resource group (prod only — for replica/firewall) |
+| `AZURE_POSTGRES_SERVER_NAME` | PostgreSQL server name (prod only — for replica/firewall) |
+
+**Environment-level variables** (set per environment):
+
+| Variable | Purpose | Example (dev) | Example (prod) |
+|----------|---------|---------------|----------------|
+| `RESOURCE_GROUP` | Azure resource group | `v2-1reach-dev` | `v2-1reach-prod` |
+| `ENVIRONMENT_NAME` | Environment identifier | `dev` | `prod` |
+| `ACR_NAME` | ACR name | `1reachcr` | `1reachcr` |
+| `CREATE_ACR` | Create ACR or reuse | `true` | `false` |
+| `USE_VNET` | Enable VNet isolation | `false` | `true` |
+| `VNET_NAME` | VNet name (if enabled) | *(empty)* | `onereach-vnet-prod` |
+| `VNET_CIDR` | VNet CIDR | *(empty)* | `10.0.0.0/24` |
+| `ACA_SUBNET_CIDR` | ACA subnet | *(empty)* | `10.0.0.0/26` |
+| `PE_SUBNET_CIDR` | Private endpoints subnet | *(empty)* | `10.0.0.64/28` |
+| `API_MIN_REPLICAS` | API min replicas | `1` | `1` |
+| `API_MAX_REPLICAS` | API max replicas | `1` | `3` |
+| `WORKER_MIN_REPLICAS` | Worker min replicas | `1` | `1` |
+| `WORKER_MAX_REPLICAS` | Worker max replicas | `1` | `3` |
+| `API_CPU` / `API_MEMORY` | API resources | `0.25` / `0.5Gi` | `0.5` / `1Gi` |
+| `WORKER_CPU` / `WORKER_MEMORY` | Worker resources | `0.25` / `0.5Gi` | `0.5` / `1Gi` |
+| `BEAT_CPU` / `BEAT_MEMORY` | Beat resources | `0.25` / `0.5Gi` | `0.5` / `1Gi` |
+| `POSTGRES_HOST` / `POSTGRES_DB` / `POSTGRES_USER` | Database | dev values | prod values |
+| `CLERK_FRONTEND_API` | Clerk FAPI URL | dev URL | prod URL |
+| `CLERK_AUTHORIZED_PARTIES` | Allowed JWT origins | dev origins | prod origins |
+| `ALLOWED_HOSTS` | Django allowed hosts | dev hosts | prod hosts |
+| `CORS_ALLOWED_ORIGINS` | CORS allowed origins | dev origins | prod origins |
+| `BASE_URL` | Public backend URL | dev URL | prod URL |
+| `STORAGE_PROVIDER_CLASS` | Storage backend | class path | class path |
+| `AZURE_STORAGE_ACCOUNT_NAME` / `AZURE_CONTAINER` | Blob storage | dev values | prod values |
+| `SMS_PROVIDER_CLASS` | SMS backend | class path | class path |
+| `WELCORP_BASE_URL` / `WELCORP_USERNAME` | SMS API | values | values |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | Monitoring | DSN / `development` | DSN / `production` |
+| `FREE_CREDIT_AMOUNT` / `SMS_RATE` / `MMS_RATE` | Billing | `5.00` / `0.10` / `0.50` | `5.00` / `0.10` / `0.50` |
+| `DEBUG` / `TEST` | Django flags | `1` / `True` | `0` / `False` |
+| `SKIP_AUTO_MIGRATE` | Entrypoint migration guard | `false` | `true` |
+
+**Repo-level secrets** (shared across environments):
 
 | Secret | Purpose |
 |--------|---------|
 | `AZURE_CREDENTIALS` | Service principal JSON for `azure/login` |
-| `AZURE_RESOURCE_GROUP` | Resource group name |
-| `AZURE_POSTGRES_*` | Host, server name, resource group, DB, user, password (for migration safety) |
-| `AZURE_SWA_TOKEN_DEV` | Dev Static Web App deploy token |
-| `AZURE_SWA_TOKEN_PROD` | Prod Static Web App deploy token |
-| `VITE_CLERK_PUBLISHABLE_KEY_DEV` | Clerk dev publishable key (`pk_test_...`) |
-| `VITE_CLERK_PUBLISHABLE_KEY_PROD` | Clerk prod publishable key (`pk_live_...`) |
-| `E2E_CLERK_*` | Clerk test credentials for E2E |
-| `STRIPE_SECRET_KEY` | Stripe test key (for E2E) |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook secret (for E2E) |
-| `VITE_SENTRY_DSN` | Frontend Sentry DSN |
 | `SENTRY_AUTH_TOKEN` | Sentry release tracking (optional) |
-| `SENTRY_ORG` / `SENTRY_PROJECT_*` | Sentry org and project slugs |
+| `SENTRY_ORG` / `SENTRY_PROJECT_BACKEND` | Sentry org and project slugs |
+| `E2E_VITE_CLERK_PUBLISHABLE_KEY` | Clerk publishable key for E2E tests |
+| `E2E_CLERK_SECRET_KEY` | Clerk secret key for E2E tests |
+| `AZURE_SWA_TOKEN_DEV` / `AZURE_SWA_TOKEN_PROD` | Static Web App deploy tokens |
+| `VITE_CLERK_PUBLISHABLE_KEY_DEV` / `VITE_CLERK_PUBLISHABLE_KEY_PROD` | Clerk publishable keys for frontend builds |
+| `VITE_SENTRY_DSN` | Frontend Sentry DSN |
 
-**Variables** (non-sensitive values, set in Settings → Variables):
+**Repo-level variables** (shared across environments):
 
 | Variable | Purpose |
 |----------|---------|
 | `ACR_LOGIN_SERVER` | e.g., `1reachcr.azurecr.io` |
-| `ACA_API_APP_NAME` | Prod API container app name |
-| `ACA_WORKER_APP_NAME` | Prod worker container app name |
-| `ACA_BEAT_APP_NAME` | Prod beat container app name |
-| `ACA_DEV_API_APP_NAME` | Dev API container app name |
-| `ACA_DEV_WORKER_APP_NAME` | Dev worker container app name |
-| `ACA_DEV_BEAT_APP_NAME` | Dev beat container app name |
-| `VITE_API_BASE_URL_DEV` | Dev API URL |
-| `VITE_API_BASE_URL_PROD` | Prod API URL |
+| `VITE_API_BASE_URL_DEV` | Dev API URL (for health checks + E2E) |
+| `VITE_API_BASE_URL_PROD` | Prod API URL (for health checks) |
+| `E2E_BASE_URL_DEV` | Dev frontend URL (for E2E) |
 
 #### Creating AZURE_CREDENTIALS
 
@@ -587,25 +631,27 @@ You need an existing Azure resource group with PostgreSQL Flexible Server, Azure
 cp infra/.env.example infra/.env.dev
 ```
 
-Edit `infra/.env.dev` with all values — infrastructure params (scaling, CPU/memory), secrets (DB password, API keys), and app config (Clerk URLs, Sentry DSN, etc.). See `.env.example` for the full list.
+Edit `infra/.env.dev` with all values — infrastructure params (scaling, CPU/memory), secrets (DB password, API keys), and app config (Clerk URLs, Sentry DSN, etc.). See `.env.example` for the full list. This file is used by `manage.sh` for init/preview/stop/start operations.
 
 #### 2. Initialise infrastructure
 
 ```bash
 # Dry run — see what will be created
-./infra/deploy.sh preview dev
+./infra/manage.sh preview dev
 
 # First-time setup (creates ACR, ACA environment, VNet, identity, container apps with placeholder images)
-./infra/deploy.sh init dev
+./infra/manage.sh init dev
 ```
 
-#### 3. Build and deploy the backend
+#### 3. Deploy the backend
+
+Populate the GitHub `dev` environment with all secrets and variables listed in [GitHub Actions Configuration](#github-actions-configuration), then push to `development`:
 
 ```bash
-./infra/deploy.sh deploy dev
+git push origin development
 ```
 
-This builds the Docker image for `linux/amd64`, tags it with the git SHA, pushes to ACR, and deploys all 3 containers with the new image + config atomically. The old revision is automatically deactivated (`activeRevisionsMode: 'Single'`).
+This triggers `deploy-dev.yml` which builds the Docker image, runs migrations, and deploys via Bicep (code + config atomic). The old revision is automatically deactivated (`activeRevisionsMode: 'Single'`).
 
 #### 4. Verify
 
@@ -635,9 +681,9 @@ Required for the CD workflows to push images:
 az role assignment create --assignee <SP_APP_ID> --role AcrPush --scope <ACR_RESOURCE_ID>
 ```
 
-#### 7. Set GitHub secrets and variables
+#### 7. Set GitHub Environment secrets and variables
 
-Set all secrets and variables listed in the [GitHub Actions Configuration](#github-actions-configuration) section above.
+Create a `dev` environment in Settings → Environments. Populate all secrets and variables listed in the [GitHub Actions Configuration](#github-actions-configuration) section above. The deploy workflow will not succeed until all required values are set.
 
 #### 8. Test the full flow
 
@@ -656,7 +702,7 @@ Production uses its own resource group, ACA environment, Redis, and PostgreSQL d
    - Check `max_connections` on the prod PostgreSQL — increase if low
    - Create a production Static Web App (free tier)
 
-2. **Create `infra/.env.prod`:**
+2. **Create `infra/.env.prod`** (for `manage.sh init`/`preview`/`stop`/`start`):
    ```bash
    cp infra/.env.dev infra/.env.prod
    ```
@@ -674,9 +720,15 @@ Production uses its own resource group, ACA environment, Redis, and PostgreSQL d
 
 3. **Provision and deploy:**
    ```bash
-   ./infra/deploy.sh preview prod
-   ./infra/deploy.sh init prod
-   ./infra/deploy.sh deploy prod
+   # Initialise infrastructure (local — one-time)
+   ./infra/manage.sh preview prod
+   ./infra/manage.sh init prod
+
+   # Create 'prod' GitHub Environment with all secrets and variables
+   # (see GitHub Actions Configuration section above)
+
+   # Deploy via CI
+   git push origin main
    curl https://<prod-api-fqdn>/api/health/
    ```
 
@@ -689,9 +741,9 @@ Production uses its own resource group, ACA environment, Redis, and PostgreSQL d
 
 5. **Configure Clerk + Stripe webhooks** with the prod API FQDN — see [Clerk Production instance](#production-instance) and [Stripe Configuration](#stripe-configuration)
 
-6. **Set GitHub variables** (`ACA_API_APP_NAME`, `ACA_WORKER_APP_NAME`, `ACA_BEAT_APP_NAME`, `VITE_API_BASE_URL_PROD`) and secret (`AZURE_SWA_TOKEN_PROD`)
+6. **Set GitHub variables** — set `VITE_API_BASE_URL_PROD` (repo-level) and `AZURE_SWA_TOKEN_PROD` (repo-level secret). Create the `prod` GitHub Environment with all secrets and variables listed in [GitHub Actions Configuration](#github-actions-configuration)
 
-7. **Update prod env vars** in `.env.prod`: `ALLOWED_HOSTS` and `BASE_URL` with the prod API FQDN, `CLERK_AUTHORIZED_PARTIES` and `CORS_ALLOWED_ORIGINS` with the custom frontend domain, production Clerk keys (`sk_live_`, `CLERK_FRONTEND_API`, `CLERK_WEBHOOK_SIGNING_SECRET`), and production Stripe keys. Then re-run `./infra/deploy.sh deploy prod`
+7. **Update prod env vars** — in the `prod` GitHub Environment variables, set `ALLOWED_HOSTS` and `BASE_URL` with the prod API FQDN, `CLERK_AUTHORIZED_PARTIES` and `CORS_ALLOWED_ORIGINS` with the custom frontend domain, production Clerk keys (`sk_live_`, `CLERK_FRONTEND_API`), and production Stripe keys in the environment secrets. Then push to `main` to deploy via CI
 
 ### Migration Safety (production only)
 
@@ -713,7 +765,9 @@ The `deploy-prod.yml` workflow checks for pending migrations and, if found, test
 
 The replica-test step requires General Purpose or Memory Optimized PostgreSQL tier. On Burstable tier, the workflow skips directly to backup + migrate.
 
-`entrypoint.sh` includes a safety-net migration check for the API container: if migrations were missed by the workflow (e.g., manual deploy), it detects and applies them on startup.
+`entrypoint.sh` includes a migration guard controlled by `SKIP_AUTO_MIGRATE`:
+- **Production** (`SKIP_AUTO_MIGRATE=true`): The API container **refuses to start** if pending migrations are detected, forcing all migrations through the CD pipeline (which tests on a replica and creates a backup first).
+- **Development** (`SKIP_AUTO_MIGRATE=false`): The API container auto-applies pending migrations on startup as a convenience safety net.
 
 ### Database Connection Pooling
 
@@ -802,6 +856,9 @@ Each ACA environment has a linked Log Analytics workspace (provisioned by Bicep)
 - **Use `rediss://` (TLS) on port `6380`** — Azure Redis requires TLS. Connection URL format: `rediss://:<access-key>@<redis-name>.redis.cache.windows.net:6380/0`.
 - **Do not URL-encode the access key** — Azure Redis access keys may end in `=`. Do **not** URL-encode `=` to `%3D` — `redis-py` handles `=` correctly. URL-encoding causes auth failures.
 - **`redis.from_url()` and TLS** — the `_ensure_redis_ssl()` helper in `settings.py` handles `ssl_cert_reqs=CERT_NONE` for Celery, but direct `redis.from_url()` calls (e.g., health endpoint) need explicit `ssl_cert_reqs=ssl.CERT_NONE` as a keyword argument. See `health.py` for the pattern.
+
+#### Bicep Deploy Time
+- **Bicep deployments add ~1-3 minutes** to each deploy compared to `az containerapp update` (~30s). This is the cost of atomic config + code deploys. If nothing changed, the ARM deployment completes quickly as a no-op.
 
 #### Celery Beat
 - **Beat must be a singleton** — `maxReplicas: 1` in Bicep. `DatabaseScheduler` provides some protection against duplicates but should not be relied upon.

@@ -5,11 +5,15 @@ on:
     branches: [development]
     paths:
       - 'backend/**'
+      - 'infra/**'
   workflow_dispatch:
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +53,7 @@ jobs:
         run: az acr login --name ${{ vars.ACR_LOGIN_SERVER }}
 
       - name: Build and push Docker image
+        id: image
         working-directory: backend
         run: |
           IMAGE="${{ vars.ACR_LOGIN_SERVER }}/1reach-backend:dev-${{ github.sha }}"
@@ -57,30 +62,81 @@ jobs:
             -t "$IMAGE" \
             .
           docker push "$IMAGE"
+          echo "tag=$IMAGE" >> "$GITHUB_OUTPUT"
 
-  deploy:
+  deploy-bicep:
     needs: build-and-push
     runs-on: ubuntu-latest
+    environment: dev
     steps:
+      - uses: actions/checkout@v4
+
       - name: Azure login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Update container apps
-        env:
-          IMAGE: ${{ vars.ACR_LOGIN_SERVER }}/1reach-backend:dev-${{ github.sha }}
-          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      - name: Deploy infrastructure + app via Bicep
         run: |
-          az containerapp update --name ${{ vars.ACA_DEV_API_APP_NAME }} \
-            --resource-group "$RG" --image "$IMAGE"
-          az containerapp update --name ${{ vars.ACA_DEV_WORKER_APP_NAME }} \
-            --resource-group "$RG" --image "$IMAGE"
-          az containerapp update --name ${{ vars.ACA_DEV_BEAT_APP_NAME }} \
-            --resource-group "$RG" --image "$IMAGE"
+          az deployment group create \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --template-file infra/main.bicep \
+            --parameters \
+              ENVIRONMENT_NAME="${{ vars.ENVIRONMENT_NAME }}" \
+              ACR_NAME="${{ vars.ACR_NAME }}" \
+              CREATE_ACR="${{ vars.CREATE_ACR }}" \
+              ACR_LOGIN_SERVER="${{ vars.ACR_LOGIN_SERVER }}" \
+              IMAGE_NAME="${{ needs.build-and-push.outputs.image_tag }}" \
+              USE_VNET="${{ vars.USE_VNET }}" \
+              VNET_NAME="${{ vars.VNET_NAME }}" \
+              VNET_CIDR="${{ vars.VNET_CIDR }}" \
+              ACA_SUBNET_CIDR="${{ vars.ACA_SUBNET_CIDR }}" \
+              PE_SUBNET_CIDR="${{ vars.PE_SUBNET_CIDR }}" \
+              API_MIN_REPLICAS=${{ vars.API_MIN_REPLICAS }} \
+              API_MAX_REPLICAS=${{ vars.API_MAX_REPLICAS }} \
+              WORKER_MIN_REPLICAS=${{ vars.WORKER_MIN_REPLICAS }} \
+              WORKER_MAX_REPLICAS=${{ vars.WORKER_MAX_REPLICAS }} \
+              API_CPU="${{ vars.API_CPU }}" \
+              API_MEMORY="${{ vars.API_MEMORY }}" \
+              WORKER_CPU="${{ vars.WORKER_CPU }}" \
+              WORKER_MEMORY="${{ vars.WORKER_MEMORY }}" \
+              BEAT_CPU="${{ vars.BEAT_CPU }}" \
+              BEAT_MEMORY="${{ vars.BEAT_MEMORY }}" \
+              DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY }}" \
+              POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+              CLERK_SECRET_KEY="${{ secrets.CLERK_SECRET_KEY }}" \
+              CLERK_WEBHOOK_SIGNING_SECRET="${{ secrets.CLERK_WEBHOOK_SIGNING_SECRET }}" \
+              STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}" \
+              STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}" \
+              CELERY_BROKER_URL="${{ secrets.CELERY_BROKER_URL }}" \
+              AZURE_STORAGE_ACCOUNT_KEY="${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
+              WELCORP_PASSWORD="${{ secrets.WELCORP_PASSWORD }}" \
+              WELCORP_CALLBACK_SECRET="${{ secrets.WELCORP_CALLBACK_SECRET }}" \
+              POSTGRES_HOST="${{ vars.POSTGRES_HOST }}" \
+              POSTGRES_DB="${{ vars.POSTGRES_DB }}" \
+              POSTGRES_USER="${{ vars.POSTGRES_USER }}" \
+              CLERK_FRONTEND_API="${{ vars.CLERK_FRONTEND_API }}" \
+              CLERK_AUTHORIZED_PARTIES="${{ vars.CLERK_AUTHORIZED_PARTIES }}" \
+              ALLOWED_HOSTS="${{ vars.ALLOWED_HOSTS }}" \
+              CORS_ALLOWED_ORIGINS="${{ vars.CORS_ALLOWED_ORIGINS }}" \
+              BASE_URL="${{ vars.BASE_URL }}" \
+              STORAGE_PROVIDER_CLASS="${{ vars.STORAGE_PROVIDER_CLASS }}" \
+              AZURE_STORAGE_ACCOUNT_NAME="${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}" \
+              AZURE_CONTAINER="${{ vars.AZURE_CONTAINER }}" \
+              SMS_PROVIDER_CLASS="${{ vars.SMS_PROVIDER_CLASS }}" \
+              WELCORP_BASE_URL="${{ vars.WELCORP_BASE_URL }}" \
+              WELCORP_USERNAME="${{ vars.WELCORP_USERNAME }}" \
+              SENTRY_DSN="${{ vars.SENTRY_DSN }}" \
+              SENTRY_ENVIRONMENT="${{ vars.SENTRY_ENVIRONMENT }}" \
+              FREE_CREDIT_AMOUNT="${{ vars.FREE_CREDIT_AMOUNT }}" \
+              SMS_RATE="${{ vars.SMS_RATE }}" \
+              MMS_RATE="${{ vars.MMS_RATE }}" \
+              DEBUG="${{ vars.DEBUG }}" \
+              TEST="${{ vars.TEST }}" \
+              SKIP_AUTO_MIGRATE="${{ vars.SKIP_AUTO_MIGRATE }}"
 
   verify-health:
-    needs: deploy
+    needs: deploy-bicep
     runs-on: ubuntu-latest
     steps:
       - name: Wait for new instance (smoke test + version check)

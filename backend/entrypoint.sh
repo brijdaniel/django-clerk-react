@@ -23,12 +23,20 @@ ROLE="${CONTAINER_ROLE:-${1:-api}}"
 
 case "$ROLE" in
   api)
-    # Safety-net migration check — catches missed migrations on manual deploys.
-    # Normal deploys apply migrations in the CD workflow before updating the image.
-    uv run python manage.py migrate --check 2>/dev/null || {
+    # Migration check — CD workflows apply migrations before deploying the image.
+    # SKIP_AUTO_MIGRATE=true (prod): refuse to start if migrations are pending.
+    # SKIP_AUTO_MIGRATE=false (dev): auto-apply as a convenience safety net.
+    if uv run python manage.py migrate --check 2>/dev/null; then
+      echo "No pending migrations."
+    elif [ "${SKIP_AUTO_MIGRATE:-false}" = "true" ]; then
+      echo "ERROR: Pending migrations detected but SKIP_AUTO_MIGRATE=true."
+      echo "Migrations must be applied via the CD pipeline before deploying."
+      uv run python manage.py showmigrations --plan | grep "\[ \]" || true
+      exit 1
+    else
       echo "WARNING: Unapplied migrations detected. Running migrate..."
       uv run python manage.py migrate --no-input || { echo "Migration failed"; exit 1; }
-    }
+    fi
     exec uv run python -m gunicorn app.asgi:application \
       -k app.worker.Worker \
       --bind 0.0.0.0:8000 \
