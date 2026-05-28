@@ -1,4 +1,5 @@
 import type { Contact } from './contact.types'
+import type { ContactGroup } from './group.types'
 
 export type ScheduleStatus =
   | 'pending'
@@ -28,6 +29,7 @@ export type Schedule = {
   contact_detail?: Contact | null
   phone?: string | null
   group?: number | null
+  group_detail?: ContactGroup | null
   parent?: number | null
   recipient_count?: number
   scheduled_time: string

@@ -72,7 +72,11 @@ export default function ScheduleTable({
 						<StatusBadge status={entry.status} />
 					</TableCell>
 					<TableCell className="w-44">
-						{entry.contact_detail ? `${entry.contact_detail.first_name} ${entry.contact_detail.last_name}` : 'N/A'}
+						{entry.contact_detail
+								? `${entry.contact_detail.first_name} ${entry.contact_detail.last_name}`
+								: entry.group_detail
+									? entry.group_detail.name
+									: 'N/A'}
 					</TableCell>
 					<TableCell className="w-20">{dayjs(entry.scheduled_time).format('hh:mmA')} </TableCell>
 					<TableCell className="w-20">{entry.sent_time ? dayjs(entry.sent_time).format('hh:mmA') : '-'}</TableCell>
