@@ -2,7 +2,7 @@
   "script-src": ["'self'", "https://*.clerk.com", "https://clerk.1reach.net", "https://challenges.cloudflare.com", "https://js.stripe.com"],
   "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
   "font-src": ["'self'", "https://fonts.gstatic.com"],
-  "img-src": ["'self'", "data:", "blob:", "https://*.blob.core.windows.net", "https://img.clerk.com"],
+  "img-src": ["'self'", "data:", "blob:", "https://*.blob.core.windows.net", "https://img.clerk.com", "https://img.logo.dev"],
   "connect-src": ["'self'", "https://*.clerk.com", "https://clerk.1reach.net", "https://clerk-telemetry.com", "https://api.1reach.net", "https://*.ingest.us.sentry.io", "https://api.stripe.com"],
   "frame-src": ["https://*.clerk.com", "https://clerk.1reach.net", "https://challenges.cloudflare.com", "https://js.stripe.com"],
   "worker-src": ["'self'", "blob:"]
