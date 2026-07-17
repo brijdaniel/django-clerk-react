@@ -1,0 +1,421 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'infra/**'
+  workflow_dispatch:
+
+env:
+  # Container image repository name inside ACR. Change to suit your project.
+  IMAGE_NAME: app-backend
+  # Base name for the container apps — must match the APP_NAME Bicep param
+  # (infra/main.bicep), which names the apps '<APP_NAME>-api-<env>' etc.
+  APP_BASE_NAME: app
+
+jobs:
+  # az CLI 2.86.0 (May 2026) renamed postgres flexible-server sub-resource args.
+  # On firewall-rule and backup, the parent server is now --server-name (was
+  # --name), and the sub-resource's own name is --name (was --rule-name /
+  # --backup-name; both were removed, not just aliased). Server-level commands
+  # (show, replica, delete) still use --name for the server. Applied below.
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC azure/login
+      contents: read
+    environment: prod
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install uv && uv sync
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          # OIDC workload-identity federation: GitHub mints a short-lived token
+          # per run that Entra only accepts for this repo+environment, so no
+          # long-lived service-principal secret is stored in GitHub.
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get runner IP
+        id: ip
+        run: echo "ip=$(curl -s https://api.ipify.org)" >> "$GITHUB_OUTPUT"
+
+      - name: Add runner IP to PostgreSQL firewall
+        run: |
+          az postgres flexible-server firewall-rule create \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --server-name ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --name github-runner \
+            --start-ip-address ${{ steps.ip.outputs.ip }} \
+            --end-ip-address ${{ steps.ip.outputs.ip }}
+
+      - name: Check for pending migrations
+        id: check
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: app.settings
+          DJANGO_SECRET_KEY: test-migration-key
+          POSTGRES_HOST: ${{ secrets.AZURE_POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          POSTGRES_PORT: '5432'
+        run: |
+          uv run python -c "
+          import django, os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'app.settings')
+          django.setup()
+          from django.db import connection
+          connection.ensure_connection()
+          print('Database connection OK')
+          " || { echo "::error::Cannot connect to production database."; exit 1; }
+
+          if uv run python manage.py migrate --check; then
+            echo "No pending migrations — skipping replica test."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Pending migrations detected:"
+            uv run python manage.py showmigrations --plan | grep "\[ \]" || true
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check DB tier
+        if: steps.check.outputs.pending == 'true'
+        id: tier
+        run: |
+          SKU_TIER=$(az postgres flexible-server show \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --name ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --query sku.tier -o tsv)
+          echo "DB tier: $SKU_TIER"
+          echo "tier=$SKU_TIER" >> "$GITHUB_OUTPUT"
+          if [ "$SKU_TIER" = "Burstable" ]; then
+            echo "supports_replica=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "supports_replica=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and promote DB replica
+        if: steps.check.outputs.pending == 'true' && steps.tier.outputs.supports_replica == 'true'
+        id: replica
+        run: |
+          REPLICA_NAME="${{ vars.AZURE_POSTGRES_SERVER_NAME }}-replica"
+          echo "name=$REPLICA_NAME" >> "$GITHUB_OUTPUT"
+          echo "Creating replica: $REPLICA_NAME"
+          az postgres flexible-server replica create \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --source-server ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --name "$REPLICA_NAME"
+          echo "Promoting replica to read-write..."
+          az postgres flexible-server replica promote \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --name "$REPLICA_NAME" --yes
+          echo "Adding runner IP to replica firewall..."
+          az postgres flexible-server firewall-rule create \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --server-name "$REPLICA_NAME" \
+            --name github-runner \
+            --start-ip-address ${{ steps.ip.outputs.ip }} \
+            --end-ip-address ${{ steps.ip.outputs.ip }}
+          REPLICA_HOST=$(az postgres flexible-server show \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --name "$REPLICA_NAME" \
+            --query fullyQualifiedDomainName -o tsv)
+          echo "host=$REPLICA_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Test migration on replica
+        if: steps.check.outputs.pending == 'true' && steps.tier.outputs.supports_replica == 'true'
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: app.settings
+          DJANGO_SECRET_KEY: test-migration-key
+          POSTGRES_HOST: ${{ steps.replica.outputs.host }}
+          POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          POSTGRES_PORT: '5432'
+        run: |
+          echo "Running test migration on replica..."
+          uv run python manage.py migrate --no-input
+
+      - name: Backup production DB
+        if: steps.check.outputs.pending == 'true' && steps.tier.outputs.supports_replica == 'true'
+        run: |
+          BACKUP_NAME="pre-deploy-$(date -u +%Y%m%d-%H%M%S)"
+          echo "Creating production backup: $BACKUP_NAME"
+          az postgres flexible-server backup create \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --server-name ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --name "$BACKUP_NAME"
+
+      - name: Run migration on production DB
+        if: steps.check.outputs.pending == 'true'
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: app.settings
+          DJANGO_SECRET_KEY: test-migration-key
+          POSTGRES_HOST: ${{ secrets.AZURE_POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          POSTGRES_PORT: '5432'
+        run: uv run python manage.py migrate --no-input
+
+      - name: Delete replica
+        if: steps.check.outputs.pending == 'true' && steps.tier.outputs.supports_replica == 'true' && always()
+        run: |
+          # A leftover replica keeps billing and widens the attack surface —
+          # fail the job loudly if deletion does not go through.
+          az postgres flexible-server delete \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --name "${{ steps.replica.outputs.name }}" --yes \
+            || { echo "::error::Failed to delete replica ${{ steps.replica.outputs.name }} — delete it manually."; exit 1; }
+
+      - name: Remove runner IP from firewall
+        if: always()
+        run: |
+          # The runner's public IP must not stay whitelisted on the production
+          # database. Tolerate "rule never created" (an early step failed),
+          # but a failed deletion of an existing rule must fail the job.
+          EXISTS=$(az postgres flexible-server firewall-rule list \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --server-name ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --query "[?name=='github-runner'] | length(@)" -o tsv 2>/dev/null || echo 0)
+          if [ "$EXISTS" = "0" ]; then
+            echo "No github-runner firewall rule present — nothing to remove."
+            exit 0
+          fi
+          az postgres flexible-server firewall-rule delete \
+            --resource-group ${{ vars.AZURE_POSTGRES_RESOURCE_GROUP }} \
+            --server-name ${{ vars.AZURE_POSTGRES_SERVER_NAME }} \
+            --name github-runner --yes \
+            || { echo "::error::Failed to remove the github-runner firewall rule — REMOVE IT MANUALLY in the Azure portal."; exit 1; }
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ vars.ACR_LOGIN_SERVER }}
+
+      - name: Build and push Docker image
+        id: image
+        working-directory: backend
+        run: |
+          # SHA tags only — production images stay immutable. A :latest tag in
+          # prod ACR is an ambiguity hazard (anything resolving it can silently
+          # repoint) and the Bicep deploy only ever uses the SHA tag.
+          IMAGE="${{ vars.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          docker build \
+            --build-arg DEPLOY_SHA=${{ github.sha }} \
+            -t "$IMAGE" \
+            .
+          docker push "$IMAGE"
+          echo "tag=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  deploy-bicep:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC azure/login
+      contents: read
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          # OIDC workload-identity federation: GitHub mints a short-lived token
+          # per run that Entra only accepts for this repo+environment, so no
+          # long-lived service-principal secret is stored in GitHub.
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy infrastructure + app via Bicep
+        run: |
+          az deployment group create \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --template-file infra/main.bicep \
+            --parameters \
+              ENVIRONMENT_NAME="${{ vars.ENVIRONMENT_NAME }}" \
+              ACR_NAME="${{ vars.ACR_NAME }}" \
+              CREATE_ACR="${{ vars.CREATE_ACR }}" \
+              ACR_LOGIN_SERVER="${{ vars.ACR_LOGIN_SERVER }}" \
+              IMAGE_NAME="${{ needs.build-and-push.outputs.image_tag }}" \
+              USE_VNET="${{ vars.USE_VNET }}" \
+              VNET_NAME="${{ vars.VNET_NAME }}" \
+              VNET_CIDR="${{ vars.VNET_CIDR }}" \
+              ACA_SUBNET_CIDR="${{ vars.ACA_SUBNET_CIDR }}" \
+              PE_SUBNET_CIDR="${{ vars.PE_SUBNET_CIDR }}" \
+              API_MIN_REPLICAS=${{ vars.API_MIN_REPLICAS }} \
+              API_MAX_REPLICAS=${{ vars.API_MAX_REPLICAS }} \
+              WORKER_MIN_REPLICAS=${{ vars.WORKER_MIN_REPLICAS }} \
+              WORKER_MAX_REPLICAS=${{ vars.WORKER_MAX_REPLICAS }} \
+              API_CPU="${{ vars.API_CPU }}" \
+              API_MEMORY="${{ vars.API_MEMORY }}" \
+              WORKER_CPU="${{ vars.WORKER_CPU }}" \
+              WORKER_MEMORY="${{ vars.WORKER_MEMORY }}" \
+              BEAT_CPU="${{ vars.BEAT_CPU }}" \
+              BEAT_MEMORY="${{ vars.BEAT_MEMORY }}" \
+              DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY }}" \
+              POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+              CLERK_SECRET_KEY="${{ secrets.CLERK_SECRET_KEY }}" \
+              CLERK_WEBHOOK_SIGNING_SECRET="${{ secrets.CLERK_WEBHOOK_SIGNING_SECRET }}" \
+              STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}" \
+              STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}" \
+              CELERY_BROKER_URL="${{ secrets.CELERY_BROKER_URL }}" \
+              AZURE_STORAGE_ACCOUNT_KEY="${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
+              POSTGRES_HOST="${{ vars.POSTGRES_HOST }}" \
+              POSTGRES_DB="${{ vars.POSTGRES_DB }}" \
+              POSTGRES_USER="${{ vars.POSTGRES_USER }}" \
+              CLERK_FRONTEND_API="${{ vars.CLERK_FRONTEND_API }}" \
+              CLERK_AUTHORIZED_PARTIES="${{ vars.CLERK_AUTHORIZED_PARTIES }}" \
+              ALLOWED_HOSTS="${{ vars.ALLOWED_HOSTS }}" \
+              CORS_ALLOWED_ORIGINS="${{ vars.CORS_ALLOWED_ORIGINS }}" \
+              FRONTEND_URL="${{ vars.FRONTEND_URL }}" \
+              STORAGE_PROVIDER_CLASS="${{ vars.STORAGE_PROVIDER_CLASS }}" \
+              AZURE_STORAGE_ACCOUNT_NAME="${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}" \
+              AZURE_CONTAINER="${{ vars.AZURE_CONTAINER }}" \
+              SENTRY_DSN="${{ vars.SENTRY_DSN }}" \
+              SENTRY_ENVIRONMENT="${{ vars.SENTRY_ENVIRONMENT }}" \
+              FREE_CREDIT_AMOUNT="${{ vars.FREE_CREDIT_AMOUNT }}" \
+              USAGE_RATE_DEFAULT="${{ vars.USAGE_RATE_DEFAULT }}" \
+              DEBUG="${{ vars.DEBUG }}" \
+              TEST="${{ vars.TEST }}" \
+              SKIP_AUTO_MIGRATE="${{ vars.SKIP_AUTO_MIGRATE }}" \
+              API_CUSTOM_DOMAIN="${{ vars.API_CUSTOM_DOMAIN }}" \
+              API_CUSTOM_DOMAIN_CERT="${{ vars.API_CUSTOM_DOMAIN_CERT }}"
+
+  verify-health:
+    needs: deploy-bicep
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      id-token: write   # required for OIDC azure/login
+      contents: read
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Smoke test new revision, then shift traffic (zero downtime)
+        run: |
+          # The API runs in multiple-revision mode: the Bicep deploy created a
+          # new revision at 0% traffic. Smoke-test it on its revision-specific
+          # FQDN; only when it reports healthy with the expected SHA does
+          # traffic move. On failure the old revision keeps serving 100%.
+          APP="${{ env.APP_BASE_NAME }}-api-${{ vars.ENVIRONMENT_NAME }}"
+          RG="${{ vars.RESOURCE_GROUP }}"
+          EXPECTED_SHA="${{ github.sha }}"
+
+          NEW_REV=$(az containerapp revision list -n "$APP" -g "$RG" \
+            --query "sort_by([], &properties.createdTime)[-1].name" -o tsv)
+          REV_FQDN=$(az containerapp revision show -n "$APP" -g "$RG" --revision "$NEW_REV" \
+            --query properties.fqdn -o tsv)
+          URL="https://$REV_FQDN/api/health/smoke/"
+          echo "Newest revision: $NEW_REV — polling $URL until version=$EXPECTED_SHA..."
+
+          HEALTHY=0
+          for i in $(seq 1 30); do
+            RESP=$(curl -s -w "\n%{http_code}" --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            STATUS=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+            echo "Attempt $i/30: HTTP $STATUS — $BODY"
+            if [ "$STATUS" = "200" ] && echo "$BODY" | grep -q "$EXPECTED_SHA"; then
+              HEALTHY=1
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::Revision $NEW_REV failed the smoke test — traffic stays on the previous revision. Deactivating the bad revision."
+            az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$NEW_REV" || true
+            exit 1
+          fi
+
+          echo "Smoke test passed — shifting 100% traffic to $NEW_REV"
+          az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$NEW_REV=100"
+
+          for REV in $(az containerapp revision list -n "$APP" -g "$RG" \
+              --query "[?properties.active && name!='$NEW_REV'].name" -o tsv); do
+            echo "Deactivating old revision $REV"
+            az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$REV"
+          done
+
+      - name: Verify the public endpoint serves the new version
+        run: |
+          URL="${{ vars.VITE_API_BASE_URL_PROD }}/api/health/smoke/"
+          EXPECTED_SHA="${{ github.sha }}"
+          for i in $(seq 1 12); do
+            BODY=$(curl -s --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            echo "Attempt $i/12: $BODY"
+            if echo "$BODY" | grep -q "$EXPECTED_SHA"; then
+              echo "Public endpoint is serving the new version."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Public endpoint did not switch to the new version within 1 minute."
+          exit 1
+
+      - name: Verify Celery worker + beat are processing
+        # The worker writes a heartbeat to the shared Azure Redis each beat
+        # tick; the api revision reads it. Stale/missing => worker/beat down
+        # or running the wrong process (the gunicorn-instead-of-celery incident).
+        run: |
+          URL="${{ vars.VITE_API_BASE_URL_PROD }}/api/health/worker/"
+          for i in $(seq 1 18); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            echo "Worker health attempt $i/18: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && exit 0
+            sleep 10
+          done
+          echo "::error::Worker/beat not processing in prod (heartbeat stale/missing)."
+          curl -s "$URL" || true
+          exit 1
+
+      - name: Verify debug/test surfaces are disabled
+        # Swagger is DEBUG-gated; 404 proves DEBUG=False, which by the boot guard
+        # (TEST=1 refuses to boot unless DEBUG=1) also proves TEST=False.
+        run: |
+          BASE="${{ vars.VITE_API_BASE_URL_PROD }}"
+          SCHEMA=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/schema/" 2>/dev/null) || true
+          echo "GET /api/schema/ -> $SCHEMA (expect 404)"
+          if [ "$SCHEMA" = "200" ]; then
+            echo "::error::/api/schema/ reachable in prod — DEBUG appears enabled; TEST endpoints may be live."
+            exit 1
+          fi
+          TS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/billing/test-set-balance/" 2>/dev/null) || true
+          echo "PATCH /api/billing/test-set-balance/ (unauth) -> $TS (expect 401/403, never 200)"
+          if [ "$TS" = "200" ]; then
+            echo "::error::test-set-balance returned 200 unauthenticated in prod."
+            exit 1
+          fi
+
+      - name: Create Sentry release
+        if: env.SENTRY_AUTH_TOKEN != ''
+        uses: getsentry/action-release@v3
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT_BACKEND }}
+        with:
+          environment: production
+          version: ${{ github.sha }}

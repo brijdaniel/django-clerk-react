@@ -9,7 +9,7 @@ from rest_framework.permissions import BasePermission
 class IsOrgMember(BasePermission):
     """Requires the user to have an active organisation in their JWT."""
     def has_permission(self, request, view):
-        return bool(getattr(request, 'org_id', None))
+        return bool(getattr(request, 'org', None))
 
 
 class IsOrgAdmin(BasePermission):
@@ -48,4 +48,9 @@ class HasOrgPermission(BasePermission):
 
         # check that user_permissions contains all the required_permissions
         user_permissions = getattr(request, 'org_permissions', [])
+
+        # Wildcard permission (*) grants all access
+        if '*' in user_permissions:
+            return True
+
         return all(p in user_permissions for p in required)

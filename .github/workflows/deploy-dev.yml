@@ -1,0 +1,229 @@
+name: Deploy Dev
+
+on:
+  push:
+    branches: [development]
+    paths:
+      - 'backend/**'
+      - 'infra/**'
+  workflow_dispatch:
+
+env:
+  # Container image repository name inside ACR. Change to suit your project.
+  IMAGE_NAME: app-backend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC azure/login
+      contents: read
+    environment: dev
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          # OIDC workload-identity federation: GitHub mints a short-lived token
+          # per run that Entra only accepts for this repo+environment, so no
+          # long-lived service-principal secret is stored in GitHub.
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Python (for migrations)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (for migrations)
+        working-directory: backend
+        run: pip install uv && uv sync
+
+      - name: Run migrations on dev DB
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: app.settings
+          DJANGO_SECRET_KEY: dev-migration-key
+          POSTGRES_HOST: ${{ secrets.AZURE_POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.AZURE_POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          POSTGRES_PORT: '5432'
+        run: |
+          if uv run python manage.py migrate --check; then
+            echo "No pending migrations."
+          else
+            echo "Applying migrations to dev DB..."
+            uv run python manage.py migrate --no-input
+          fi
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ vars.ACR_LOGIN_SERVER }}
+
+      - name: Build and push Docker image
+        id: image
+        working-directory: backend
+        run: |
+          IMAGE="${{ vars.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:dev-${{ github.sha }}"
+          docker build \
+            --build-arg DEPLOY_SHA=${{ github.sha }} \
+            -t "$IMAGE" \
+            .
+          docker push "$IMAGE"
+          echo "tag=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  deploy-bicep:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for OIDC azure/login
+      contents: read
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          # OIDC workload-identity federation: GitHub mints a short-lived token
+          # per run that Entra only accepts for this repo+environment, so no
+          # long-lived service-principal secret is stored in GitHub.
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy infrastructure + app via Bicep
+        run: |
+          az deployment group create \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --template-file infra/main.bicep \
+            --parameters \
+              ENVIRONMENT_NAME="${{ vars.ENVIRONMENT_NAME }}" \
+              ACR_NAME="${{ vars.ACR_NAME }}" \
+              CREATE_ACR="${{ vars.CREATE_ACR }}" \
+              ACR_LOGIN_SERVER="${{ vars.ACR_LOGIN_SERVER }}" \
+              IMAGE_NAME="${{ needs.build-and-push.outputs.image_tag }}" \
+              USE_VNET="${{ vars.USE_VNET }}" \
+              VNET_NAME="${{ vars.VNET_NAME }}" \
+              VNET_CIDR="${{ vars.VNET_CIDR }}" \
+              ACA_SUBNET_CIDR="${{ vars.ACA_SUBNET_CIDR }}" \
+              PE_SUBNET_CIDR="${{ vars.PE_SUBNET_CIDR }}" \
+              API_MIN_REPLICAS=${{ vars.API_MIN_REPLICAS }} \
+              API_MAX_REPLICAS=${{ vars.API_MAX_REPLICAS }} \
+              WORKER_MIN_REPLICAS=${{ vars.WORKER_MIN_REPLICAS }} \
+              WORKER_MAX_REPLICAS=${{ vars.WORKER_MAX_REPLICAS }} \
+              API_CPU="${{ vars.API_CPU }}" \
+              API_MEMORY="${{ vars.API_MEMORY }}" \
+              WORKER_CPU="${{ vars.WORKER_CPU }}" \
+              WORKER_MEMORY="${{ vars.WORKER_MEMORY }}" \
+              BEAT_CPU="${{ vars.BEAT_CPU }}" \
+              BEAT_MEMORY="${{ vars.BEAT_MEMORY }}" \
+              DJANGO_SECRET_KEY="${{ secrets.DJANGO_SECRET_KEY }}" \
+              POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+              CLERK_SECRET_KEY="${{ secrets.CLERK_SECRET_KEY }}" \
+              CLERK_WEBHOOK_SIGNING_SECRET="${{ secrets.CLERK_WEBHOOK_SIGNING_SECRET }}" \
+              STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}" \
+              STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}" \
+              CELERY_BROKER_URL="${{ secrets.CELERY_BROKER_URL }}" \
+              AZURE_STORAGE_ACCOUNT_KEY="${{ secrets.AZURE_STORAGE_ACCOUNT_KEY }}" \
+              POSTGRES_HOST="${{ vars.POSTGRES_HOST }}" \
+              POSTGRES_DB="${{ vars.POSTGRES_DB }}" \
+              POSTGRES_USER="${{ vars.POSTGRES_USER }}" \
+              CLERK_FRONTEND_API="${{ vars.CLERK_FRONTEND_API }}" \
+              CLERK_AUTHORIZED_PARTIES="${{ vars.CLERK_AUTHORIZED_PARTIES }}" \
+              ALLOWED_HOSTS="${{ vars.ALLOWED_HOSTS }}" \
+              CORS_ALLOWED_ORIGINS="${{ vars.CORS_ALLOWED_ORIGINS }}" \
+              FRONTEND_URL="${{ vars.FRONTEND_URL }}" \
+              STORAGE_PROVIDER_CLASS="${{ vars.STORAGE_PROVIDER_CLASS }}" \
+              AZURE_STORAGE_ACCOUNT_NAME="${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}" \
+              AZURE_CONTAINER="${{ vars.AZURE_CONTAINER }}" \
+              SENTRY_DSN="${{ vars.SENTRY_DSN }}" \
+              SENTRY_ENVIRONMENT="${{ vars.SENTRY_ENVIRONMENT }}" \
+              FREE_CREDIT_AMOUNT="${{ vars.FREE_CREDIT_AMOUNT }}" \
+              USAGE_RATE_DEFAULT="${{ vars.USAGE_RATE_DEFAULT }}" \
+              DEBUG="${{ vars.DEBUG }}" \
+              TEST="${{ vars.TEST }}" \
+              SKIP_AUTO_MIGRATE="${{ vars.SKIP_AUTO_MIGRATE }}"
+
+  verify-health:
+    needs: deploy-bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for new instance (smoke test + version check)
+        run: |
+          URL="${{ vars.VITE_API_BASE_URL_DEV }}/api/health/smoke/"
+          EXPECTED_SHA="${{ github.sha }}"
+          echo "Polling $URL until version=$EXPECTED_SHA..."
+          for i in $(seq 1 30); do
+            RESP=$(curl -s -w "\n%{http_code}" --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            STATUS=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+            echo "Attempt $i/30: HTTP $STATUS — $BODY"
+            if [ "$STATUS" = "200" ] && echo "$BODY" | grep -q "$EXPECTED_SHA"; then
+              echo "New instance confirmed — smoke test passed."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "New instance did not become healthy within 5 minutes."
+          exit 1
+
+      - name: Verify Celery worker + beat are processing
+        # The worker writes a heartbeat to the shared Redis each beat tick;
+        # the api revision reads it. A stale/missing heartbeat means the
+        # worker/beat container is down or running the wrong process (the
+        # gunicorn-instead-of-celery incident) — fail the deploy.
+        run: |
+          URL="${{ vars.VITE_API_BASE_URL_DEV }}/api/health/worker/"
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "$URL" 2>/dev/null) || true
+            echo "Worker health attempt $i/30: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && exit 0
+            sleep 10
+          done
+          echo "::error::Worker/beat not processing (heartbeat stale/missing)."
+          curl -s "$URL" || true
+          exit 1
+
+  run-e2e-tests:
+    needs: verify-health
+    runs-on: ubuntu-latest
+    # dev environment grants access to the dev-scoped Clerk E2E secrets.
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Run E2E tests against dev environment
+        working-directory: frontend
+        env:
+          CLERK_PUBLISHABLE_KEY: ${{ secrets.E2E_VITE_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.E2E_CLERK_SECRET_KEY }}
+          E2E_API_BASE_URL: ${{ vars.VITE_API_BASE_URL_DEV }}
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL_DEV }}
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-dev
+          path: frontend/playwright-report/
+          retention-days: 14
