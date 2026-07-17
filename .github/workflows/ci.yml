@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, development]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env files
+        run: |
+          cat > backend/.env <<EOF
+          DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          DEBUG=1
+          TEST=1
+          POSTGRES_DB=app
+          POSTGRES_USER=app
+          POSTGRES_PASSWORD=app
+          POSTGRES_HOST=db
+          POSTGRES_PORT=5432
+          ALLOWED_HOSTS=localhost,127.0.0.1
+          CORS_ALLOWED_ORIGINS=http://localhost:5173
+          FRONTEND_URL=http://localhost:5173
+          CLERK_FRONTEND_API=${{ vars.CLERK_FRONTEND_API }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_WEBHOOK_SIGNING_SECRET=${{ secrets.CLERK_WEBHOOK_SIGNING_SECRET }}
+          CLERK_AUTHORIZED_PARTIES=http://localhost:5173
+          CELERY_BROKER_URL=redis://redis:6379/0
+          CELERY_RESULT_BACKEND=redis://redis:6379/0
+          FREE_CREDIT_AMOUNT=10.00
+          USAGE_RATE_DEFAULT=0.05
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          EOF
+          touch frontend/.env
+
+      - name: Run backend tests
+        run: |
+          docker compose up -d redis
+          # --cov-fail-under guards against silent coverage regressions
+          # (current backend coverage sits around 92%).
+          docker compose run --rm -e CONTAINER_ROLE= backend sh -c "pip install uv -q && uv sync -q && uv run python -m pytest tests/ -q --cov-fail-under=90"
+
+      - name: Check for missing migrations
+        run: |
+          # Fails if a model change isn't captured in a migration file (the test
+          # suite runs with --no-migrations, so schema drift is otherwise invisible).
+          # makemigrations --check needs no DB connection.
+          docker compose run --rm --entrypoint "" \
+            backend sh -c "pip install uv -q && uv sync -q && uv run python manage.py makemigrations --check --dry-run"
+
+      - name: Dependency audit — pip (report-only)
+        continue-on-error: true  # report-only until the existing advisory backlog is triaged; flip to blocking once clean
+        run: |
+          docker compose run --rm --entrypoint "" \
+            backend sh -c "pip install uv -q && uv sync -q && uv run --with pip-audit pip-audit || true"
+
+      - name: Django deployment checklist
+        run: |
+          # Production-like env so security-setting regressions fail the build.
+          # A throwaway strong key keeps the check about settings code, not the
+          # CI secret's strength. --entrypoint "" skips the DB wait (the check
+          # doesn't touch the database, and DEBUG=0 requires sslmode the local
+          # postgres doesn't speak).
+          docker compose run --rm --entrypoint "" \
+            -e DEBUG=0 -e TEST=0 \
+            -e DJANGO_SECRET_KEY=$(openssl rand -hex 32) \
+            backend sh -c "pip install uv -q && uv sync -q && uv run python manage.py check --deploy --fail-level WARNING"
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run frontend tests (with coverage gate)
+        working-directory: frontend
+        run: npm run test:coverage
+
+      - name: Dependency audit — npm (report-only)
+        working-directory: frontend
+        continue-on-error: true  # report-only until the existing advisory backlog is triaged; flip to blocking once clean
+        run: npm audit --audit-level=high
+
+  e2e:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create backend/.env
+        run: |
+          cat > backend/.env <<EOF
+          DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          DEBUG=1
+          TEST=True
+          POSTGRES_DB=app
+          POSTGRES_USER=app
+          POSTGRES_PASSWORD=app
+          POSTGRES_HOST=db
+          POSTGRES_PORT=5432
+          ALLOWED_HOSTS=localhost,127.0.0.1,backend
+          CORS_ALLOWED_ORIGINS=http://localhost:5173
+          FRONTEND_URL=http://localhost:5173
+          CLERK_FRONTEND_API=${{ vars.CLERK_FRONTEND_API }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_AUTHORIZED_PARTIES=http://localhost:5173
+          CELERY_BROKER_URL=redis://redis:6379/0
+          CELERY_RESULT_BACKEND=redis://redis:6379/0
+          FREE_CREDIT_AMOUNT=10.00
+          USAGE_RATE_DEFAULT=0.05
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          DB_CONN_MAX_AGE=0
+          EOF
+
+      - name: Create frontend/.env
+        run: |
+          cat > frontend/.env <<EOF
+          VITE_CLERK_PUBLISHABLE_KEY=${{ secrets.E2E_VITE_CLERK_PUBLISHABLE_KEY }}
+          VITE_API_BASE_URL=http://localhost:8000
+          EOF
+
+      - name: Start services
+        run: docker compose up -d db redis backend celery_worker celery_beat frontend --wait --wait-timeout 180
+
+      - name: Run migrations
+        run: docker compose exec -T backend uv run python manage.py migrate --noinput
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 20); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/health/ 2>/dev/null) || true
+            echo "Backend health attempt $i: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && break
+            sleep 3
+          done
+
+      - name: Wait for Celery worker + beat
+        # /api/health/worker/ reads the heartbeat the worker writes to Redis on
+        # each beat tick, so a dead/misconfigured worker or beat (e.g. the
+        # container running the wrong process) must fail here, not surface as
+        # ambiguous E2E timeouts later.
+        run: |
+          for i in $(seq 1 20); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/health/worker/ 2>/dev/null) || true
+            echo "Worker health attempt $i: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && break
+            sleep 3
+          done
+          curl -sf http://localhost:8000/api/health/worker/ > /dev/null || {
+            echo "::error::Celery worker/beat never became healthy"
+            curl -s http://localhost:8000/api/health/worker/ || true
+            docker compose logs celery_worker celery_beat --tail=200 || true
+            exit 1
+          }
+
+      - name: Pre-warm Vite dev server
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/ 2>/dev/null) || true
+            echo "Vite warmup attempt $i: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && sleep 5 && break
+            sleep 3
+          done
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Clean Docker-owned node_modules
+        run: |
+          docker compose stop frontend
+          docker run --rm -v ${{ github.workspace }}/frontend:/frontend node:20-bookworm-slim rm -rf /frontend/node_modules
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Restart frontend for E2E
+        run: docker compose start frontend
+
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/ 2>/dev/null) || true
+            echo "Frontend warmup attempt $i: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && break
+            sleep 5
+          done
+
+      - name: Run E2E tests
+        working-directory: frontend
+        env:
+          # clerkSetup() reads CLERK_PUBLISHABLE_KEY (not VITE_CLERK_PUBLISHABLE_KEY)
+          CLERK_PUBLISHABLE_KEY: ${{ secrets.E2E_VITE_CLERK_PUBLISHABLE_KEY }}
+          CLERK_SECRET_KEY: ${{ secrets.E2E_CLERK_SECRET_KEY }}
+        run: npx playwright test
+
+      - name: Dump backend logs
+        if: failure()
+        run: docker compose logs backend --tail=500
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+      - name: Stop services
+        if: always()
+        run: docker compose down

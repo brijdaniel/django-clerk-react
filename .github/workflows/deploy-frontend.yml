@@ -1,0 +1,70 @@
+name: Deploy Frontend
+
+on:
+  push:
+    branches: [development, main]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "token=${{ secrets.AZURE_SWA_TOKEN_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "api_url=${{ vars.VITE_API_BASE_URL_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "clerk_key=${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_PROD }}" >> "$GITHUB_OUTPUT"
+            echo "sentry_env=production" >> "$GITHUB_OUTPUT"
+            echo "env_name=production" >> "$GITHUB_OUTPUT"
+            echo "swa_env=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "token=${{ secrets.AZURE_SWA_TOKEN_DEV }}" >> "$GITHUB_OUTPUT"
+            echo "api_url=${{ vars.VITE_API_BASE_URL_DEV }}" >> "$GITHUB_OUTPUT"
+            echo "clerk_key=${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_DEV }}" >> "$GITHUB_OUTPUT"
+            echo "sentry_env=development" >> "$GITHUB_OUTPUT"
+            echo "env_name=dev" >> "$GITHUB_OUTPUT"
+            echo "swa_env=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ steps.env.outputs.clerk_key }}
+          VITE_API_BASE_URL: ${{ steps.env.outputs.api_url }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_ENVIRONMENT: ${{ steps.env.outputs.sentry_env }}
+
+      - name: Generate SWA config
+        working-directory: frontend
+        run: node scripts/build-swa-config.js
+        env:
+          SWA_ENV: ${{ steps.env.outputs.swa_env }}
+
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.env.outputs.token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: frontend/dist
+          skip_app_build: true
+
+      - name: Create Sentry release
+        if: env.SENTRY_AUTH_TOKEN != ''
+        uses: getsentry/action-release@v3
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT_FRONTEND }}
+        with:
+          environment: ${{ steps.env.outputs.env_name }}
+          version: ${{ github.sha }}
