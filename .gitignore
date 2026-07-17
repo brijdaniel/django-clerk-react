@@ -1,3 +1,14 @@
-*.env
+*.env*
 *.sqlite*
 __pycache__/
+.venv/
+.coverage
+htmlcov/
+test-results/
+.tanstack/
+.pytest_cache/
+*/playwright-report/
+.DS_Store
+*.apk
+dist/
+staticfiles/
