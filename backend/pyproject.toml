@@ -25,7 +25,7 @@ dependencies = [
     "django-celery-beat",
     "pytest==7.4.3",
     "pytest-django==4.7.0",
-    "pytest-cov==4.1.0",
+    "pytest-cov==7.1.0",
     "factory-boy==3.3.0",
     "freezegun==1.5.1",
     "pytest-xdist==3.5.0",
