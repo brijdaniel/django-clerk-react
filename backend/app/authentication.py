@@ -1,14 +1,18 @@
+import logging
+
 import jwt
 from jwt import PyJWKClient
 from django.conf import settings
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
-from .models import User
+from .models import Organisation, User
+
+logger = logging.getLogger('app.auth')
 
 
 # defined at the module level to utilise the PyJWKClient built in cache
-jwks_client = PyJWKClient(f'https://{settings.CLERK_FRONTEND_API}/.well-known/jwks.json')
+jwks_client = PyJWKClient(f'{settings.CLERK_FRONTEND_API}/.well-known/jwks.json')
 
 class ClerkJWTAuthentication(BaseAuthentication):
     """Reads bearer token, authenticates against Clerk,
@@ -34,16 +38,19 @@ class ClerkJWTAuthentication(BaseAuthentication):
                     'verify_iss': True,
                     'verify_aud': False,
                 },
-                issuer=f'https://{settings.CLERK_FRONTEND_API}',
+                issuer=settings.CLERK_FRONTEND_API,
             )
         except jwt.ExpiredSignatureError as e:
+            logger.warning('Token expired')
             raise AuthenticationFailed('Token has expired') from e
         except jwt.InvalidTokenError as e:
+            logger.warning('Invalid token: %s', e)
             raise AuthenticationFailed(f'Invalid token: {str(e)}') from e
 
         # Check request origin for CSRF protection
         azp = payload.get('azp')
         if azp not in settings.CLERK_AUTHORIZED_PARTIES:
+            logger.warning('Unauthorized party: %s', azp)
             raise AuthenticationFailed('Invalid authorised party')
 
         # Subject claim is the clerk user id, use it to find user in our db
@@ -51,5 +58,27 @@ class ClerkJWTAuthentication(BaseAuthentication):
         if not clerk_user_id:
             raise AuthenticationFailed('Token missing sub claim')
         user, _ = User.objects.get_or_create(clerk_id=clerk_user_id, defaults={'is_active': True})
+
+        # Extract org claims from JWT and set on Django request for downstream use
+        # (must happen here, not in Django middleware, because DRF auth runs after middleware)
+        django_request = getattr(request, '_request', request)
+        org_claims = payload.get('o', {})
+        if org_claims:
+            django_request.org_id = org_claims.get('id')
+            django_request.org_role = org_claims.get('rol')
+            per = org_claims.get('per', '')
+            django_request.org_permissions = [p.strip() for p in per.split(',') if p.strip()] if per else []
+            if django_request.org_id:
+                django_request.org = Organisation.objects.filter(clerk_org_id=django_request.org_id).first()
+                if not django_request.org:
+                    # The JWT references an org our webhook hasn't synced yet
+                    # (or that failed to sync). Without this guard the request
+                    # proceeds with org_id set but org=None — TenantScopedMixin
+                    # then queries against a nonexistent org and views that use
+                    # request.org fail in confusing, view-specific ways.
+                    logger.warning('Organisation not found in DB: %s', django_request.org_id)
+                    raise AuthenticationFailed(
+                        'Organisation is not synced yet — please retry shortly.'
+                    )
 
         return user, payload

@@ -9,9 +9,20 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
-
 from pathlib import Path
+import json
+import logging
 import os
+import ssl as _ssl
+from urllib.parse import quote as _urlquote
+
+import certifi
+from celery.schedules import crontab
+from django.core.exceptions import ImproperlyConfigured
+from decimal import Decimal as _Decimal
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+from sentry_sdk.integrations.celery import CeleryIntegration
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -23,12 +34,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    raise ImproperlyConfigured(
+        'DJANGO_SECRET_KEY must be set — refusing to start without a secret key.'
+    )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG')
+DEBUG = os.environ.get('DEBUG', '0').lower() in ('1', 'true')
+TEST = os.environ.get('TEST', '0').lower() in ('1', 'true')
 
-ALLOWED_HOSTS = []
+# TEST mode disables Clerk webhook signature verification (for CI/E2E seeding)
+# and exposes test-only endpoints. Forged webhooks could grant credits and flip
+# billing modes, so refuse to boot if it ever reaches a non-DEBUG environment.
+if TEST and not DEBUG:
+    raise ImproperlyConfigured(
+        'TEST=1 disables webhook signature verification and must never be set '
+        'in production. Unset TEST or (for local/CI use only) also set DEBUG=1.'
+    )
 
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
 
 # Application definition
 INSTALLED_APPS = [
@@ -40,11 +66,16 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'django_filters',
+    'drf_spectacular',
+    'django_celery_beat',
     'app'
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'app.middleware.RequestLoggingMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -77,6 +108,13 @@ ASGI_APPLICATION = 'app.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+# Connection pool (psycopg3 native) — bounded per-process pool for ASGI safety.
+# Disable with DB_POOL=false for local dev where pooling is unnecessary.
+_DB_POOL_ENABLED = os.environ.get('DB_POOL', 'true').lower() in ('1', 'true')
+_DB_POOL_MIN = int(os.environ.get('DB_POOL_MIN_SIZE', '2'))
+_DB_POOL_MAX = int(os.environ.get('DB_POOL_MAX_SIZE', '8'))
+_DB_POOL_TIMEOUT = int(os.environ.get('DB_POOL_TIMEOUT', '10'))
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -85,6 +123,16 @@ DATABASES = {
         'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
         'HOST': os.environ.get('POSTGRES_HOST'),
         'PORT': os.environ.get('POSTGRES_PORT'),
+        'CONN_MAX_AGE': None if _DB_POOL_ENABLED else int(os.environ.get('DB_CONN_MAX_AGE', '0')),
+        'CONN_HEALTH_CHECKS': True,
+        'OPTIONS': {
+            **({'sslmode': 'require'} if not DEBUG else {}),
+        },
+        **({'POOL': {
+            'min_size': _DB_POOL_MIN,
+            'max_size': _DB_POOL_MAX,
+            'timeout': _DB_POOL_TIMEOUT,
+        }} if _DB_POOL_ENABLED else {}),
     }
 }
 
@@ -122,29 +170,332 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+# STATICFILES_STORAGE was removed in Django 5.1 and silently ignored — the
+# STORAGES dict is the only supported form, so whitenoise's compressed
+# manifest storage (hashed filenames + far-future caching) actually applies.
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
+
+# Security headers — env-overridable; defaults are secure outside DEBUG and
+# relaxed for local dev.
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'False' if DEBUG else 'True') == 'True'
+CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', 'False' if DEBUG else 'True') == 'True'
+SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+X_FRAME_OPTIONS = 'DENY'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
+
+# Deployment-checklist items that are deliberate decisions, not gaps
+# (CI runs `manage.py check --deploy --fail-level WARNING`):
+SILENCED_SYSTEM_CHECKS = [
+    'security.W008',        # SECURE_SSL_REDIRECT: TLS redirect handled by ACA ingress
+    'security.W021',        # SECURE_HSTS_PRELOAD: not submitting to the preload list
+    'drf_spectacular.W001', # schema generation can't introspect ClerkJWTAuthentication
+    'drf_spectacular.W002', # plain APIViews (webhooks/health) have no serializer
+]
+
+# Azure Container Apps ingress terminates TLS and forwards requests over HTTP
+# with X-Forwarded-Proto set. Without this, request.is_secure() is always
+# False behind the ingress, breaking secure-cookie handling and the CSRF
+# origin check on the Django admin. (The ingress overwrites any client-sent
+# value, so the header is trustworthy in deployed environments.)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# NOTE: SECURE_SSL_REDIRECT intentionally omitted — TLS terminates at the ACA
+# ingress; enabling it causes infinite redirect loops.
+
+# Origins trusted for CSRF (Django 4+ checks the Origin header on POSTs —
+# needed for the admin at e.g. https://api.example.com behind the ingress).
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
+]
+
+# Request body limits — deliberate values rather than accidental defaults, so
+# oversized payloads are rejected early instead of consuming worker memory.
+# File uploads are size-checked by their handlers; these bound non-file
+# request bodies and the in-memory upload threshold.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get('DATA_UPLOAD_MAX_MEMORY_SIZE', str(2 * 1024 * 1024)))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get('FILE_UPLOAD_MAX_MEMORY_SIZE', str(5 * 1024 * 1024)))
 
 
 # Django REST Framework
 REST_FRAMEWORK = {
+    # DRF's default renderers include the browsable HTML API explorer, which
+    # would serve forms and endpoint listings to any browser in production.
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+        *(['rest_framework.renderers.BrowsableAPIRenderer'] if DEBUG else []),
+    ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'app.authentication.ClerkJWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'EXCEPTION_HANDLER': 'app.exception_handler.custom_exception_handler',
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'app.pagination.StandardPagination',
+    'PAGE_SIZE': 50,
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        # Anonymous traffic only reaches AllowAny views; webhooks and health
+        # checks opt out of throttling explicitly (provider retries and ACA
+        # probes must never be rate limited), so this mainly bounds abuse.
+        'anon': os.environ.get('THROTTLE_RATE_ANON', '100/min'),
+        'user': os.environ.get('THROTTLE_RATE_USER', '1000/min'),
+        # Example scoped rate for expensive endpoints — see app/throttles.py.
+        'burst': os.environ.get('THROTTLE_RATE_BURST', '10/min'),
+    },
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'App API',
+    'VERSION': '1.0.0',
+    'DESCRIPTION': 'Multi-tenant API with Clerk authentication and credit-based billing.',
 }
 
 
 # CORS
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-]
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',')
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
 
 # Clerk
-CLERK_FRONTEND_API = os.environ.get('CLERK_FRONTEND_API', '') 
+CLERK_FRONTEND_API = os.environ.get('CLERK_FRONTEND_API', '')
 CLERK_SECRET_KEY = os.environ.get('CLERK_SECRET_KEY', '')
 CLERK_WEBHOOK_SIGNING_SECRET = os.environ.get('CLERK_WEBHOOK_SIGNING_SECRET', '')
-CLERK_AUTHORIZED_PARTIES = [
-    'http://localhost:5173',
-]
+CLERK_AUTHORIZED_PARTIES = os.environ.get('CLERK_AUTHORIZED_PARTIES', 'http://localhost:5173').split(',')
+
+
+# Billing
+FREE_CREDIT_AMOUNT = _Decimal(os.environ.get('FREE_CREDIT_AMOUNT', '5.00'))
+# Per-unit rates by usage type. get_rate() resolves: per-org Config override →
+# USAGE_RATES[usage_type] → USAGE_RATES['default']. Add app-specific entries
+# here (e.g. 'api_call': Decimal('0.01')) as you introduce usage types.
+USAGE_RATES = {
+    'default': _Decimal(os.environ.get('USAGE_RATE_DEFAULT', '0.10')),
+}
+# Timezone that monthly billing periods (usage caps, invoices) roll over in.
+BILLING_TIMEZONE = os.environ.get('BILLING_TIMEZONE', 'UTC')
+# ISO currency code used for Stripe checkouts and invoices.
+STRIPE_CURRENCY = os.environ.get('STRIPE_CURRENCY', 'usd')
+
+# Metered billing provider (auto-selects Stripe when STRIPE_SECRET_KEY is set)
+METERED_BILLING_PROVIDER_CLASS = (
+    'app.utils.stripe.StripeMeteredBillingProvider'
+    if os.environ.get('STRIPE_SECRET_KEY')
+    else 'app.utils.metered_billing.MockMeteredBillingProvider'
+)
+METERED_BILLING_PROVIDER_CONFIG = {
+    'secret_key': os.environ.get('STRIPE_SECRET_KEY', ''),
+    'webhook_secret': os.environ.get('STRIPE_WEBHOOK_SECRET', ''),
+}
+
+
+# Celery (local dev: redis in docker-compose; production: Azure Cache for Redis)
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', CELERY_BROKER_URL)
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TIMEZONE = 'UTC'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_ACKS_LATE = True          # Never lose tasks on worker crash
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Fair dispatch
+CELERY_TASK_DEFAULT_QUEUE = 'default'  # Match worker's -Q default (entrypoint.sh)
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'socket_connect_timeout': 30,
+    'socket_timeout': 30,
+    'socket_keepalive': True,
+    # Redis re-delivers unacknowledged tasks after this many seconds. Tasks
+    # scheduled with apply_async(countdown=...) sit unacked in a worker until
+    # their ETA, so this must exceed the longest countdown/ETA the app uses or
+    # those tasks are delivered twice. 5400s clears a 1-hour delay with margin.
+    'visibility_timeout': 5400,
+}
+CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
+    'socket_connect_timeout': 30,
+    'socket_timeout': 30,
+    'socket_keepalive': True,
+}
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Task execution guards — the worker runs only a few concurrency slots, so a
+# hung task (e.g. a stuck provider connection) must not pin one forever.
+# Long-running beat tasks (e.g. invoicing) override these per-task in
+# app/celery.py.
+CELERY_TASK_TIME_LIMIT = int(os.environ.get('CELERY_TASK_TIME_LIMIT', '300'))
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.environ.get('CELERY_TASK_SOFT_TIME_LIMIT', '240'))
+# Recycle prefork children before slow memory leaks can OOM the replica (KiB).
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = int(os.environ.get('CELERY_WORKER_MAX_MEMORY_PER_CHILD', '262144'))
+# Emit task lifecycle events so monitoring (Sentry cron checks, celery
+# inspect/events tooling) can observe failures and stalls.
+CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+# All tasks are fire-and-forget (nothing calls .get()); storing their return
+# values just accumulates result keys in Redis until expiry.
+CELERY_TASK_IGNORE_RESULT = True
+
+# Worker liveness: the worker_heartbeat beat task writes a timestamp to Redis
+# on each tick; /api/health/worker/ reports it stale if older than
+# STALE_FACTOR x the interval. Redis (the broker), NOT django cache — api and
+# worker/beat are separate containers and LocMemCache is per-process.
+WORKER_HEARTBEAT_INTERVAL_SECONDS = float(os.environ.get('WORKER_HEARTBEAT_INTERVAL_SECONDS', '60'))
+WORKER_HEARTBEAT_KEY = os.environ.get('WORKER_HEARTBEAT_KEY', 'celery:worker_heartbeat')
+WORKER_HEARTBEAT_STALE_FACTOR = int(os.environ.get('WORKER_HEARTBEAT_STALE_FACTOR', '2'))
+
+CELERY_BEAT_SCHEDULE = {
+    'worker-heartbeat': {
+        'task': 'app.celery.worker_heartbeat',
+        'schedule': WORKER_HEARTBEAT_INTERVAL_SECONDS,
+    },
+    'generate-monthly-invoices': {
+        'task': 'app.celery.generate_monthly_invoices',
+        'schedule': crontab(day_of_month=1, hour=2, minute=0),  # 1st of month, 2:00 AM
+    },
+}
+
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# Redis SSL — required for Azure Cache for Redis (rediss:// URLs).
+# Certificates are verified against certifi's CA bundle: Azure Cache presents
+# publicly-trusted certs, and CERT_NONE would let the client handshake with
+# anything answering on the hostname (silent DNS misdirection, key harvesting).
+def _ensure_redis_ssl(url):
+    if url and url.startswith('rediss://') and 'ssl_cert_reqs' not in url:
+        sep = '&' if '?' in url else '?'
+        return (
+            url + sep
+            + 'ssl_cert_reqs=CERT_REQUIRED&ssl_ca_certs=' + _urlquote(certifi.where(), safe='')
+        )
+    return url
+
+CELERY_BROKER_URL = _ensure_redis_ssl(CELERY_BROKER_URL)
+CELERY_RESULT_BACKEND = _ensure_redis_ssl(CELERY_RESULT_BACKEND)
+
+if CELERY_BROKER_URL and CELERY_BROKER_URL.startswith('rediss://'):
+    CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': _ssl.CERT_REQUIRED, 'ssl_ca_certs': certifi.where()}
+    CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': _ssl.CERT_REQUIRED, 'ssl_ca_certs': certifi.where()}
+
+
+# Cache — backs DRF throttling only (no direct cache.* use anywhere; sessions
+# are DB-backed). Intentionally per-process LocMemCache: throttle counters are
+# per worker/replica and reset on restart, so limits are approximate. That is
+# acceptable because throttling here is defense-in-depth, not a quota — the
+# money-sensitive endpoints are gated by billing (credit balance + monthly cap)
+# and tenant scoping, and webhooks/health are throttle-exempt.
+#
+# A shared Redis cache was deliberately NOT used: pointing Django's RedisCache
+# at the rediss:// broker URL fails (redis-py rejects the kombu-style
+# ssl_cert_reqs=CERT_REQUIRED query param), and sharing the broker's Redis DB
+# risks cache.clear() FLUSHDB-ing the Celery queue. If accurate global
+# throttling is ever needed, add a RedisCache with a redis-py-safe URL
+# (ssl_cert_reqs=required) on a dedicated Redis DB index.
+CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+
+
+# Storage Provider Configuration
+STORAGE_PROVIDER_CLASS = os.environ.get(
+    'STORAGE_PROVIDER_CLASS',
+    'app.utils.storage.MockStorageProvider'  # Default to mock for dev
+)
+
+STORAGE_PROVIDER_CONFIG = {
+    # Azure Blob Storage settings (only used if AzureBlobStorageProvider selected)
+    'account_name': os.environ.get('AZURE_STORAGE_ACCOUNT_NAME', ''),
+    'account_key': os.environ.get('AZURE_STORAGE_ACCOUNT_KEY', ''),
+    'container': os.environ.get('AZURE_CONTAINER', 'media'),
+}
+
+# Optional: Django media files (for LocalStorageProvider if implemented)
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = '/media/'
+
+
+# Sentry
+SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=os.environ.get('SENTRY_ENVIRONMENT', 'production'),
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        send_default_pii=False,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+        ],
+    )
+
+
+# Logging
+class JSONFormatter(logging.Formatter):
+    """Structured JSON log formatter for Azure App Service / Azure Monitor."""
+
+    def format(self, record):
+        log_entry = {
+            'timestamp': self.formatTime(record),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': record.getMessage(),
+        }
+        # Include extra fields from RequestLoggingMiddleware
+        for field in ('request_id', 'method', 'path', 'status', 'duration_ms',
+                      'ip', 'user_agent', 'org_id', 'user_id'):
+            value = getattr(record, field, None)
+            if value is not None:
+                log_entry[field] = value
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
+
+LOG_FORMAT = os.environ.get('LOG_FORMAT', 'json' if not DEBUG else 'text')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'text': {
+            'format': '%(asctime)s %(levelname)s [%(name)s] %(message)s',
+        },
+        'json': {
+            '()': JSONFormatter,
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': LOG_FORMAT,
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'WARNING',
+    },
+    'loggers': {
+        'app': {
+            'handlers': ['console'],
+            'level': os.environ.get('LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'django.security': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+    },
+}

@@ -1,4 +1,27 @@
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.exceptions import MethodNotAllowed
+
 from .models import Organisation
+
+
+class SoftDeleteMixin:
+    """
+    Mixin for DRF viewsets that implements soft delete.
+    Sets is_active=False instead of deleting the object from the database.
+    Only works with models that have an is_active field.
+    """
+    def perform_destroy(self, instance):
+        """Soft delete by setting is_active=False."""
+        if not hasattr(instance, 'is_active'):
+            raise MethodNotAllowed('DELETE', detail='This resource does not support deletion')
+
+        instance.is_active = False
+        if hasattr(instance, 'updated_by'):
+            instance.updated_by = self.request.user
+            instance.save(update_fields=['is_active', 'updated_by'])
+        else:
+            instance.save(update_fields=['is_active'])
 
 
 class TenantScopedMixin:
@@ -28,11 +51,25 @@ class TenantScopedMixin:
         return qs.filter(**{lookup: org_id})
 
     def perform_create(self, serializer):
-        if self.tenant_org_field != 'organisation':
-            serializer.save()
-            return
+        kwargs = {}
 
-        org = getattr(self.request, 'org', None)
-        if not org and getattr(self.request, 'org_id', None):
-            org = Organisation.objects.filter(clerk_org_id=self.request.org_id).first()
-        serializer.save(organisation=org)
+        if self.tenant_org_field == 'organisation':
+            org = getattr(self.request, 'org', None)
+            if not org and getattr(self.request, 'org_id', None):
+                org = Organisation.objects.filter(clerk_org_id=self.request.org_id).first()
+            kwargs['organisation'] = org
+
+        model = serializer.Meta.model
+        if hasattr(model, 'created_by'):
+            kwargs['created_by'] = self.request.user
+        if hasattr(model, 'updated_by'):
+            kwargs['updated_by'] = self.request.user
+
+        serializer.save(**kwargs)
+
+    def perform_update(self, serializer):
+        kwargs = {}
+        model = serializer.Meta.model
+        if hasattr(model, 'updated_by'):
+            kwargs['updated_by'] = self.request.user
+        serializer.save(**kwargs)

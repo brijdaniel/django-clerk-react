@@ -8,8 +8,74 @@ POSTGRES_PORT=5432
 # Backend
 DJANGO_SECRET_KEY=
 DEBUG=1
+TEST=0                                          # Set to 1 for E2E tests (enables test-only endpoints, skips webhook signature verification)
+ALLOWED_HOSTS=localhost,127.0.0.1
+CORS_ALLOWED_ORIGINS=http://localhost:5173
+CLERK_AUTHORIZED_PARTIES=http://localhost:5173
 
 # Clerk
 CLERK_FRONTEND_API=
 CLERK_SECRET_KEY=
 CLERK_WEBHOOK_SIGNING_SECRET=
+
+# Storage Provider (optional — defaults to MockStorageProvider; uncomment to
+# use Azure Blob Storage, which then requires the AZURE_* values below)
+# STORAGE_PROVIDER_CLASS=app.utils.storage.AzureBlobStorageProvider
+# AZURE_STORAGE_ACCOUNT_NAME=<account-name>
+# AZURE_STORAGE_ACCOUNT_KEY=<account-key>
+# AZURE_CONTAINER=media
+
+# Sentry (optional - disabled if not set)
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=production
+SENTRY_TRACES_SAMPLE_RATE=0.1
+
+# Logging (optional)
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# API rate limits (optional — DRF throttle rates)
+THROTTLE_RATE_ANON=100/min
+THROTTLE_RATE_USER=1000/min
+THROTTLE_RATE_BURST=10/min
+
+# Billing
+FREE_CREDIT_AMOUNT=5.00
+# Fallback per-unit rate for usage types without their own entry in
+# settings.USAGE_RATES or a per-org Config('<usage_type>_rate') override.
+USAGE_RATE_DEFAULT=0.10
+# Timezone monthly billing periods (usage caps, invoices) roll over in.
+BILLING_TIMEZONE=UTC
+# ISO currency code for Stripe checkouts and invoices.
+STRIPE_CURRENCY=usd
+
+# Stripe (metered billing — required if using StripeMeteredBillingProvider)
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+
+# Celery (set to a managed Redis connection string in production)
+CELERY_BROKER_URL=redis://redis:6379/0
+CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+# Worker liveness heartbeat — how often the worker_heartbeat beat task runs;
+# /api/health/worker/ reports 503 when the heartbeat goes stale.
+WORKER_HEARTBEAT_INTERVAL_SECONDS=60
+
+# Database connection pooling (psycopg3 native pool)
+# Pool is enabled by default for production ASGI deployments.
+# Set DB_POOL=false for local dev (docker-compose already does this).
+DB_POOL=true
+DB_POOL_MIN_SIZE=2
+DB_POOL_MAX_SIZE=8
+DB_POOL_TIMEOUT=10
+# Fallback when DB_POOL=false (0 = close after each request)
+DB_CONN_MAX_AGE=0
+
+# Security — defaults are secure when DEBUG=0 and relaxed when DEBUG=1, so
+# these only need setting to override (e.g. False locally with DEBUG=0).
+SESSION_COOKIE_SECURE=False
+CSRF_COOKIE_SECURE=False
+SECURE_HSTS_SECONDS=0
+# Comma-separated origins trusted for CSRF (required for the Django admin in
+# deployed environments, e.g. https://api.example.com)
+CSRF_TRUSTED_ORIGINS=
