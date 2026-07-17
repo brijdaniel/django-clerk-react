@@ -42,7 +42,7 @@ jobs:
         run: pip install uv && uv sync
 
       - name: Azure login
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           # OIDC workload-identity federation: GitHub mints a short-lived token
           # per run that Entra only accepts for this repo+environment, so no
@@ -235,7 +235,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Azure login
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           # OIDC workload-identity federation: GitHub mints a short-lived token
           # per run that Entra only accepts for this repo+environment, so no
@@ -308,7 +308,7 @@ jobs:
       contents: read
     steps:
       - name: Azure login
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
