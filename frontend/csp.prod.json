@@ -1,0 +1,9 @@
+{
+  "script-src": ["'self'", "https://*.clerk.com", "https://clerk.example.com", "https://challenges.cloudflare.com", "https://js.stripe.com"],
+  "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+  "font-src": ["'self'", "https://fonts.gstatic.com"],
+  "img-src": ["'self'", "data:", "blob:", "https://*.blob.core.windows.net", "https://img.clerk.com"],
+  "connect-src": ["'self'", "https://*.clerk.com", "https://clerk.example.com", "https://clerk-telemetry.com", "https://api.example.com", "https://*.ingest.us.sentry.io", "https://api.stripe.com"],
+  "frame-src": ["https://*.clerk.com", "https://clerk.example.com", "https://challenges.cloudflare.com", "https://js.stripe.com"],
+  "worker-src": ["'self'", "blob:"]
+}
