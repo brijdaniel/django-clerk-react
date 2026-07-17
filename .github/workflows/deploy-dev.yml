@@ -22,7 +22,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.image.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Azure login
         uses: azure/login@v2
@@ -84,7 +84,7 @@ jobs:
       contents: read
     environment: dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Azure login
         uses: azure/login@v2
@@ -195,7 +195,7 @@ jobs:
     # dev environment grants access to the dev-scoped Clerk E2E secrets.
     environment: dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
